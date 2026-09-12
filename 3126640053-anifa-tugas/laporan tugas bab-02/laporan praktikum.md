@@ -1,7 +1,7 @@
-# Laporan Bab - 2
+# Bab 2 : Konsep Container dan Instalasi Docker
 
 <div align="center">
-  <h1 style="text-align: center;font-weight: bold">LAPORAN RESMI<br>WORKSHOP DEVOPS</h1>
+  <h1 style="text-align: center;font-weight: bold">Praktikum 2<br>Containerization dan Docker</h1>
   <h4 style="text-align: center;">Dosen Pengampu : Dr. Ferry Astika Saputra, S.T., M.Sc.</h4>
 </div>
 <br />
