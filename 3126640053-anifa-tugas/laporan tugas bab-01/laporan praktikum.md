@@ -156,16 +156,14 @@ docker info --format '{{json .SecurityOptions}}'
 
 ### 4.1 Rekaman Baseline
 
-| Komponen | Perintah | Versi Tercatat |
+| Komponen | Perintah | Hasil Program|
 | --- | --- | --- |
-| Homebrew | `brew --version` | *(lihat Gambar 1–2)* |
-| Docker Desktop | `docker version` | *(lihat Gambar 7)* |
-| Docker Compose | `docker compose version` | *(lihat Gambar 8)* |
-| Git | `git --version` | *(lihat Gambar 9)* |
-| OpenSSL | `openssl version` | *(lihat Gambar 10)* |
-| curl | `curl --version` | *(lihat Gambar 11)* |
-
-> Catatan: kolom "Versi Tercatat" perlu diisi manual sesuai angka yang tertera pada masing-masing gambar hasil praktikum.
+| Homebrew | `brew --version` | *(Gambar 1–2)* |
+| Docker Desktop | `docker version` | *(Gambar 7)* |
+| Docker Compose | `docker compose version` | *(Gambar 8)* |
+| Git | `git --version` | *(Gambar 9)* |
+| OpenSSL | `openssl version` | *(Gambar 10)* |
+| curl | `curl --version` | *(Gambar 11)* |
 
 ### 4.2 Mekanisme Keamanan Host
 
