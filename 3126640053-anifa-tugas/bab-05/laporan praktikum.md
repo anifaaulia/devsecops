@@ -1,6 +1,18 @@
 # BAB 5 : DATABASE SERVICE DI DOCKER (POSTGRESQL)
-Anifa Aulia Abdari (3126640053) 
+<div align="center">
+  <img src="./assets/halaman-01-gambar-01.jpeg" alt="Logo PENS">
+  <h3 style="text-align: center;">Disusun Oleh : </h3>
+  <p style="text-align: center;">
+    <strong>Anifa Aulia Abdari (3126640053)</strong><br>
+    Mata Kuliah : Workshop DevOps<br>
+    Dosen Pengampu : Dr. Ferry Astika Saputra, S.T., M.Sc.<br>
+    Tanggal pelaksanaan : 10 Oktober 2026 <br>
+  </p>
+  <h3 style="text-align: center;line-height: 1.5">Politeknik Elektronika Negeri Surabaya<br>Departemen Teknik Informatika Dan Komputer<br>Program Studi Teknik Informatika<br>Kelas B - StrLJ D4 Teknik Informatika<br>2026</h3>
+  <hr><hr>
+</div>
 
+---
 # 1. Tujuan Praktikum
 
 Setelah menyelesaikan praktikum Bab 5 ini, mahasiswa diharapkan mampu:
