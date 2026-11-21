@@ -1,959 +1,614 @@
-# Laporan Praktikum Bab 5: Database Service di Docker (PostgreSQL)
+# BAB 5 : DATABASE SERVICE DI DOCKER (POSTGRESQL)
+Anifa Aulia Abdari (3126640053) 
 
-**Mata Kuliah:** Workshop DevOps  
-**Dosen Pengampu:** Dr. Ferry Astika Saputra, S.T., M.Sc.  
-**Disusun oleh:** Anifa Aulia Abdari (3126640053)  
-**Institusi:** Politeknik Elektronika Negeri Surabaya  
-**Departemen:** Teknik Informatika dan Komputer  
-**Program Studi:** Teknik Informatika  
-**Tahun:** 2026
+# 1. Tujuan Praktikum
 
----
+Setelah menyelesaikan praktikum Bab 5 ini, mahasiswa diharapkan mampu:
 
-> Dokumen ini dikonversi dari PDF laporan praktikum Bab 5. Gambar yang tertanam pada PDF diekstrak ke folder `assets/` dan ditautkan pada halaman terkait.
+1. Menjalankan PostgreSQL dengan konfigurasi berbasis environment variable dan volume persisten.
+2. Menginisialisasi basis data menggunakan berkas SQL pada `docker-entrypoint-initdb.d`.
+3. Mengakses basis data melalui `psql` dan pgAdmin 4.
+4. Melakukan backup dan restore menggunakan `pg_dump` dan `pg_restore`.
+5. Menerapkan healthcheck pada service PostgreSQL.
 
-## Halaman 1
+# 2. Dasar Teori Singkat
 
-LAPORAN PRAKTIKUM
+## 2.1 Database sebagai Sistem Persisten
 
-### BAB 5 : Database Service di Docker (PostgreSQL)
+Database container berbeda dari stateless service karena data harus diperlakukan sebagai aset utama. Oleh karena itu, volume, backup, restore, permission, dan siklus hidup container perlu dirancang dengan hati-hati.
 
-Disusun untuk memenuhi Mata Kuliah Workshop DevOps
+Docker membedakan tiga jenis mekanisme penyimpanan, yaitu volume, bind mount, dan tmpfs. Untuk PostgreSQL, named volume lebih aman dibandingkan writable layer karena data dapat dipertahankan meskipun container dibuat ulang.
 
-Dosen Pengampu : Dr. Ferry Astika Saputra, S.T., M.Sc.
+Namun, volume bukan pengganti backup. Kerusakan storage, kesalahan operator, atau penghapusan volume tetap dapat menyebabkan kehilangan data. Oleh karena itu, backup perlu disertai pengujian restore untuk memastikan data benar-benar dapat dipulihkan.
 
-Disusun Oleh :
+Image PostgreSQL resmi juga menjalankan berkas `.sql` dan `.sh` pada direktori `/docker-entrypoint-initdb.d` hanya ketika direktori data masih kosong. Perubahan pada init script tidak otomatis diterapkan ketika volume lama masih digunakan. Perubahan skema berikutnya perlu dilakukan melalui mekanisme migrasi.
 
-Anifa Aulia Abdari (3126640053)
+## 2.2 Variabel Lingkungan PostgreSQL
 
-Politeknik Elektronika Negeri Surabaya
+Konfigurasi awal container PostgreSQL dilakukan melalui beberapa variabel lingkungan berikut.
 
-Departemen Teknik Informatika Dan Komputer
+| Variabel | Fungsi |
+|---|---|
+| `POSTGRES_DB` | Nama basis data awal yang dibuat ketika inisialisasi |
+| `POSTGRES_USER` | User awal atau superuser container |
+| `POSTGRES_PASSWORD` | Password awal yang wajib diisi untuk praktikum sederhana |
+| `PGDATA` | Direktori data PostgreSQL di dalam container |
+| `POSTGRES_INITDB_ARGS` | Argumen tambahan initdb, misalnya encoding atau locale |
 
-Program Studi Teknik Informatika
+Penggunaan environment variable membantu memisahkan konfigurasi dari definisi service. Pada praktikum ini, konfigurasi disimpan pada file `.env`.
 
-Tahun 2026
+## 2.3 Integritas, Hak Akses, dan Secret
 
-**Gambar/ilustrasi pada halaman ini:**
+Model ACID (Atomicity, Consistency, Isolation, Durability) digunakan untuk menjaga validitas transaksi database. Constraint seperti `PRIMARY KEY`, `UNIQUE`, dan `NOT NULL` membantu mencegah data yang tidak valid masuk ke dalam database.
 
-![Ilustrasi halaman 1](./assets/halaman-01-gambar-01.jpeg)
+Prinsip least privilege mengharuskan setiap akun hanya memperoleh hak akses yang diperlukan. Akun administrasi sebaiknya tidak digunakan untuk aktivitas aplikasi sehari-hari.
 
----
+Kredensial juga tidak boleh ditanam pada Dockerfile, image layer, atau repository. File `.env` dapat digunakan untuk laboratorium, tetapi bukan pengganti secret manager pada lingkungan produksi.
 
-## Halaman 2
+## 2.4 Jaringan, Ketersediaan, dan Resource
 
-1
+PostgreSQL sebaiknya berada pada jaringan internal dan tidak dipublikasikan ke seluruh interface host kecuali diperlukan. TLS digunakan untuk melindungi data dalam perjalanan, sedangkan enkripsi storage melindungi media penyimpanan.
 
-### 1. Tujuan Pembelajaran dan Kompetensi Utama
+Healthcheck menggunakan `pg_isready` dapat menunjukkan bahwa server menerima koneksi. Namun, healthcheck tersebut tidak membuktikan bahwa skema, data, atau query bisnis sudah benar. Oleh karena itu, pengujian perlu mencakup query representatif, constraint, backup-restore, dan akses negatif.
 
-Setelah menyelesaikan praktikum pada Bab 5 ini, mahasiswa diharapkan mampu:
+## 2.5 Migrasi dan Tata Kelola Operasional
 
-### 1. Menjalankan PostgreSQL dengan konfigurasi berbasis environment variable dan
+Skema database merupakan bagian dari aplikasi yang perlu diberi versi. Migrasi harus memiliki urutan, pemilik, serta strategi rollback atau forward-fix.
 
-volume persisten.
+Sebelum membuat backup, perlu ditentukan Recovery Point Objective (RPO) dan Recovery Time Objective (RTO). Proses restore juga harus diuji dengan mengukur waktu pemulihan aktual.
 
-### 2. Menginisialisasi basis data menggunakan berkas SQL pada docker-entrypoint-
+Penggunaan tag image yang berubah dapat menimbulkan perbedaan versi dan kompatibilitas. Oleh karena itu, upgrade image perlu diuji terlebih dahulu pada salinan data.
 
-initdb.d.
+# 3. Alat dan Bahan
 
-### 3. Mengakses basis data melalui psql dan pgAdmin4.
+| No. | Alat/Bahan | Keterangan |
+|---|---|---|
+| 1 | MacBook | Perangkat utama praktikum |
+| 2 | VMware | Virtualisasi lingkungan Linux |
+| 3 | Ubuntu | Sistem operasi lingkungan praktikum |
+| 4 | Docker Engine | Menjalankan container |
+| 5 | Docker Compose | Mengelola service container |
+| 6 | PostgreSQL 16 Alpine | Database server |
+| 7 | pgAdmin 4 | Antarmuka pengelolaan PostgreSQL |
+| 8 | `psql` | Mengakses database melalui command line |
+| 9 | `pg_dump` | Membuat backup database |
+| 10 | `pg_restore` | Memulihkan database dari backup |
+| 11 | `sha256sum` | Memeriksa checksum file backup |
+| 12 | Terminal | Menjalankan perintah praktikum |
 
-### 4. Melakukan backup dan restore menggunakan pg_dump dan pg_restore.
+Direktori kerja praktikum:
 
-### 5. Menerapkan healthcheck pada service PostgreSQL.
+```bash
+~/docker-lab/bab-5
+```
 
-### 2. Konsep Inti dan Landasan Teori
+Struktur direktori proyek:
 
-Database container berbeda dari stateless service: data harus diperlakukan sebagai aset
-
-utama, sehingga volume, backup, restore, permission, dan siklus hidup (lifecycle) container
-
-perlu dirancang dengan hati-hati. PostgreSQL di dalam container tetap merupakan sistem
-
-basis data relasional yang lengkap; container hanya mengubah cara proses dan
-
-dependensinya dikemas.
-
-### 2.1 Database sebagai Sistem Persisten
-
-Docker membedakan volume (dikelola Docker Engine), bind mount (path pada host), dan
-
-tmpfs (sementara). Untuk PostgreSQL, named volume lebih aman daripada writable layer,
-
-tetapi volume bukan backup: kerusakan storage, kesalahan operator, atau penghapusan
-
-volume tetap dapat menghilangkan data. Backup baru bernilai bila terbukti dapat dipulihkan,
-
-sehingga praktikum menyertakan uji restore ke database terpisah dan pemeriksaan jumlah
-
-baris. Selain itu, image PostgreSQL resmi menjalankan berkas .sql dan .sh pada /docker-
-
-entrypoint-initdb.d hanya ketika direktori data masih kosong; mengubah init script tidak
-
-berpengaruh selama volume lama masih dipakai, sehingga perubahan skema berikutnya
-
-dilakukan melalui migrasi.
-
-### 2.2 Variabel Lingkungan PostgreSQL
-
-Konfigurasi awal container PostgreSQL dilakukan melalui variabel lingkungan berikut.
-
-Variabel
-
-Fungsi
-
-`POSTGRES_DB`
-Nama basis data awal yang dibuat ketika inisialisasi
-
-`POSTGRES_USER`
-User awal/superuser container
-
-`POSTGRES_PASSWORD`
-Password awal; wajib diisi untuk lab sederhana
-
----
-
-## Halaman 3
-
-2
-
-Variabel
-
-Fungsi
-
-`PGDATA`
-Direktori data PostgreSQL di dalam container
-
-`POSTGRES_INITDB_ARGS`
-Argumen tambahan initdb, misalnya encoding atau
-
-locale
-
-### 2.3 Integritas, Hak Akses, dan Secret
-
-Model ACID (atomicity, consistency, isolation, durability) menjaga transaksi tetap valid,
-
-sedangkan constraint seperti primary key, unique, dan not-null menolak data tidak valid
-
-meskipun aplikasi memiliki bug. Prinsip least privilege mengharuskan akun aplikasi hanya
-
-memperoleh hak yang diperlukan; akun administrasi tidak dipakai oleh aplikasi harian.
-
-Kredensial tidak boleh ditanam pada Dockerfile, image layer, atau repository. Environment
-
-variable mudah terekspos melalui konfigurasi efektif, daftar proses, atau log, sedangkan
-
-Docker Compose mendukung secret yang dipasang sebagai berkas. Berkas .env hanya layak
-
-untuk laboratorium, harus dikecualikan dari version control, dan bukan pengganti secret
-
-manager produksi.
-
-### 2.4 Jaringan, Ketersediaan, dan Resource
-
-PostgreSQL sebaiknya berada pada jaringan internal dan tidak dipublikasikan ke seluruh
-
-interface host kecuali diperlukan. TLS melindungi data dalam transit, sedangkan enkripsi
-
-storage melindungi media. Limit container mencegah satu workload menghabiskan resource
-
-host, tetapi limit yang terlalu kecil dapat memicu OOM. Healthcheck pg_isready hanya
-
-menunjukkan server menerima koneksi, bukan bahwa skema, data, atau query bisnis sudah
-
-benar; karena itu kriteria penerimaan perlu mencakup query representatif, constraint,
-
-backup-restore, dan akses negatif.
-
-### 2.5 Migrasi dan Tata Kelola Operasional
-
-Skema basis data adalah artefak aplikasi yang harus diberi versi; migrasi perlu memiliki
-
-urutan, pemilik, dan strategi rollback atau forward-fix, serta dijalankan oleh satu job khusus
-
-agar tidak terjadi race condition antarreplika. Sebelum membuat backup, tim menentukan
-
-Recovery Point Objective (RPO) dan Recovery Time Objective (RTO), lalu menguji restore
-
-dengan mengukur waktu aktual. Tag image yang berubah dapat membawa perbedaan major
-
-version dan format data, sehingga upgrade diuji pada salinan data. Evidence praktikum yang
-
-sah meliputi status health, hasil transaksi, bukti constraint menolak data invalid, checksum
-
-backup, dan keberhasilan restore.
-
----
-
-## Halaman 4
-
-3
-
-### 3. Langkah Praktikum
-
-Seluruh berkas pada praktikum ini ditempatkan pada satu direktori kerja khusus Bab 5 agar
-
-berkas konfigurasi, bind mount, dan laporan mudah dipisahkan dari bab lain. Struktur berkas
-
-yang dibangun adalah sebagai berikut:
-
+```text
 bab-5/
-
 ├── .env.example
-
 ├── .env
-
 ├── .gitignore
-
 ├── compose.yaml
-
 ├── init/
-
-│ └── 01-schema.sql
-
+│   └── 01-schema.sql
 ├── pgadmin/
-
-│ └── servers.json
-
+│   └── servers.json
 ├── scripts/
-
-│ ├── backup.sh
-
-│ └── restore-test.sh
-
+│   ├── backup.sh
+│   └── restore-test.sh
 └── backup/
+```
 
-Berikut adalah tahapan implementasi praktikum sesuai dengan langkah pada cheatsheet Bab
+# 4. Langkah Praktikum
 
-### 5. Pada setiap tahap, hasil eksekusi diverifikasi sebelum melanjutkan ke tahap berikutnya.
+Seluruh berkas pada praktikum ini ditempatkan pada satu direktori kerja khusus Bab 5 agar berkas konfigurasi, bind mount, dan laporan mudah dipisahkan dari bab lain.
 
-### 3.1 Penyiapan Direktori Kerja dan Struktur Proyek
+## 4.1 Penyiapan Direktori Kerja dan Struktur Proyek
 
-Langkah awal adalah membuat direktori kerja bab-5 beserta subdirektori init, backup,
+Langkah awal adalah membuat direktori kerja `bab-5` beserta subdirektori `init`, `backup`, `pgadmin`, dan `scripts`.
 
-pgadmin, dan scripts.
+```bash
+mkdir -p ~/docker-lab/bab-5/{init,backup,pgadmin,scripts}
+cd ~/docker-lab/bab-5
+```
 
-Gambar 1. Pembuatan struktur direktori kerja Bab 5.
+![Gambar 1](./assets/halaman-04-gambar-01.jpeg)
 
-### 3.2 Pembuatan Template Konfigurasi (.env.example) dan Konfigurasi Aktif
+*Gambar 1. Pembuatan struktur direktori kerja Bab 5.*
 
-File .env.example berisi template konfigurasi laboratorium. Nilai di dalamnya hanyalah
+Direktori tersebut digunakan untuk memisahkan file konfigurasi, SQL inisialisasi, script backup dan restore, serta hasil pencadangan database.
 
-kredensial sintetis untuk pembelajaran praktikum dan tidak boleh digunakan pada sistem
+## 4.2 Pembuatan Template Konfigurasi (.env.example) dan Konfigurasi Aktif
 
-produksi. Berkas dibuat dengan nano .env.example pada ~/docker-lab/bab-5/.
+File `.env.example` digunakan sebagai template konfigurasi laboratorium. Nilai di dalamnya merupakan kredensial sintetis untuk kebutuhan praktikum dan tidak boleh digunakan pada sistem produksi.
 
-`mkdir -p ~/docker-lab/bab-5/{init,backup,pgadmin,scripts}`
-`cd ~/docker-lab/bab-5`
-**Gambar/ilustrasi pada halaman ini:**
+Template kemudian disalin menjadi konfigurasi aktif `.env`. Permission file dibatasi agar hanya pemilik file yang dapat membaca dan mengubahnya.
 
-![Ilustrasi halaman 4](./assets/halaman-04-gambar-01.jpeg)
+```bash
+cp .env.example .env
+chmod 600 .env
+```
 
----
+![Gambar 2](./assets/halaman-05-gambar-01.jpeg)
 
-## Halaman 5
+*Gambar 2. Isi `.env.example` dan pembatasan permission berkas `.env`.*
 
-4
+File `.env` memudahkan proses interpolasi konfigurasi Docker Compose. Meskipun demikian, penggunaan `.env` belum dapat dianggap sebagai mekanisme secret management yang aman untuk lingkungan produksi.
 
-Template kemudian disalin menjadi konfigurasi aktif .env dan izin aksesnya dibatasi hanya
+## 4.3 Pembuatan File .gitignore
 
-untuk pemilik berkas. File .env memudahkan interpolasi Compose, tetapi bukan secret
+File `.gitignore` dibuat untuk mengurangi risiko kredensial dan berkas dump ikut terkirim ke repository Git.
 
-manager.
+Konfigurasi ini mengecualikan file `.env`, direktori backup, dan file log dari version control.
 
-`cp .env.example .env`
-`chmod 600 .env`
-Gambar 2. Isi .env.example dan pembatasan permission berkas .env.
+![Gambar 3](./assets/halaman-05-gambar-02.jpeg)
 
-### 3.3 Pembuatan File .gitignore
+*Gambar 3. Isi file `.gitignore`.*
 
-File .gitignore dibuat untuk mengurangi risiko kredensial dan berkas dump ikut terkirim ke
+Pengecualian tersebut penting karena file `.env` berisi informasi kredensial, sedangkan file dump dapat berisi data database yang perlu dilindungi.
 
-repository Git.
+## 4.4 Konfigurasi Orkestrasi compose.yaml
 
-Gambar 3. Isi file .gitignore.
+File `compose.yaml` digunakan untuk mendefinisikan dua service, yaitu `postgres-db` dan `pgadmin`.
 
-### 3.4 Konfigurasi Orkestrasi compose.yaml
+Konfigurasi mencakup:
 
-File compose.yaml mendefinisikan dua service, yaitu postgres-db (PostgreSQL 16 Alpine)
+- Image PostgreSQL 16 Alpine dan pgAdmin 4.
+- Environment variable yang dibaca dari `.env`.
+- Named volume `pg-data` dan `pgadmin-data`.
+- Bridge network `data-net`.
+- Pembatasan published port ke loopback `127.0.0.1`.
+- Healthcheck menggunakan `pg_isready`.
+- Ketergantungan pgAdmin terhadap kondisi PostgreSQL yang sudah healthy.
 
-dan pgadmin (pgAdmin 4), dua named volume (pg-data dan pgadmin-data), serta bridge
+![Gambar 4](./assets/halaman-06-gambar-01.jpeg)
 
-network data-net. Nilai kredensial dibaca dari .env, port dibatasi ke loopback 127.0.0.1,
+*Gambar 4. Isi file `compose.yaml`.*
 
-healthcheck memakai pg_isready, dan pgAdmin baru dijalankan setelah PostgreSQL
+Port PostgreSQL dan pgAdmin dibatasi ke loopback. Untuk eksperimen yang hanya menggunakan pgAdmin di dalam Compose, published port PostgreSQL dapat dihapus sehingga database tidak terbuka langsung ke host.
 
-berstatus healthy.
+## 4.5 Pembuatan Init Script Schema (init/01-schema.sql)
 
-**Gambar/ilustrasi pada halaman ini:**
+File `init/01-schema.sql` digunakan untuk membuat tabel `students`, memasukkan dua baris data awal, dan membuat indeks pada kolom `name`.
 
-![Ilustrasi halaman 5](./assets/halaman-05-gambar-01.png)
+Berkas ini di-mount secara read-only ke direktori `/docker-entrypoint-initdb.d`.
 
-![Ilustrasi halaman 5](./assets/halaman-05-gambar-02.jpeg)
+![Gambar 5](./assets/halaman-07-gambar-01.jpeg)
 
----
+*Gambar 5. Isi file `01-schema.sql`.*
 
-## Halaman 6
+Init script hanya dijalankan ketika direktori data PostgreSQL masih kosong. Jika volume lama masih digunakan, perubahan pada file SQL tidak otomatis dijalankan kembali.
 
-5
+## 4.6 Pendaftaran Server pada pgAdmin (pgadmin/servers.json)
 
-Gambar 4. Isi file compose.yaml.
+File `pgadmin/servers.json` digunakan untuk mendaftarkan server PostgreSQL secara otomatis pada pgAdmin.
 
-Port PostgreSQL dan pgAdmin dibatasi ke loopback. Untuk eksperimen yang hanya
+Password tidak ditulis pada file ini. pgAdmin akan meminta password ketika koneksi dibuat.
 
-menggunakan pgAdmin di dalam Compose, published port PostgreSQL dapat dihapus
+Hostname yang digunakan adalah `postgres-db`, bukan `localhost`, karena pgAdmin berjalan pada container yang berbeda. Di dalam container pgAdmin, `localhost` mengarah ke container pgAdmin itu sendiri.
 
-sehingga basis data sama sekali tidak terbuka ke host.
+![Gambar 6](./assets/halaman-07-gambar-02.jpeg)
 
-### 3.5 Pembuatan Init Script Schema (init/01-schema.sql)
+*Gambar 6. Isi file `servers.json`.*
 
-Berkas init/01-schema.sql membuat tabel students, mengisi dua baris data awal, dan
+## 4.7 Pembuatan Script Backup (scripts/backup.sh)
 
-membuat indeks pada kolom name. Berkas ini di-mount read-only ke /docker-entrypoint-
+Script `backup.sh` digunakan untuk membuat logical backup dengan format custom menggunakan `pg_dump` melalui perintah `docker compose exec`.
 
-initdb.d, sehingga hanya dijalankan ketika direktori data PostgreSQL masih kosong.
+Script dirancang untuk:
 
-**Gambar/ilustrasi pada halaman ini:**
+1. Menghentikan proses apabila terjadi kesalahan menggunakan `set -Eeuo pipefail`.
+2. Membuat file backup dengan format custom.
+3. Memastikan file dump tidak kosong.
+4. Membuat checksum SHA-256.
 
-![Ilustrasi halaman 6](./assets/halaman-06-gambar-01.jpeg)
+![Gambar 7](./assets/halaman-08-gambar-01.jpeg)
 
----
+*Gambar 7. Isi file `backup.sh`.*
 
-## Halaman 7
+Penggunaan format custom memungkinkan file backup dipulihkan menggunakan `pg_restore`.
 
-6
+## 4.8 Pembuatan Script Restore Test (scripts/restore-test.sh)
 
-Gambar 5. Isi file 01-schema.sql.
+Script `restore-test.sh` digunakan untuk menguji proses pemulihan database pada basis data terpisah bernama `labdb_restore_test`.
 
-### 3.6 Pendaftaran Server pada pgAdmin (pgadmin/servers.json)
+Dengan menggunakan database terpisah, database sumber `labdb` tidak ditimpa selama proses pengujian.
 
-Berkas pgadmin/servers.json mendaftarkan server PostgreSQL secara otomatis pada
+Script melakukan beberapa tahapan, yaitu:
 
-pgAdmin. Password tidak ditulis pada berkas ini; pgAdmin akan memintanya ketika koneksi
+1. Memeriksa keberadaan file dump.
+2. Memverifikasi checksum apabila tersedia.
+3. Membuat ulang database pengujian.
+4. Menjalankan `pg_restore`.
+5. Menghitung jumlah baris pada tabel `students`.
 
-dibuat. Hostname yang digunakan adalah postgres-db, bukan localhost, karena pgAdmin
+![Gambar 8](./assets/halaman-09-gambar-01.jpeg)
 
-berjalan di container yang berbeda; di dalam container pgAdmin, localhost berarti container
+*Gambar 8. Isi file `restore-test.sh`.*
 
-pgAdmin itu sendiri.
+## 4.9 Pengaturan Permission dan Validasi Konfigurasi
 
-Gambar 6. Isi file servers.json.
+Kedua script diberikan izin eksekusi. Selanjutnya, struktur berkas diperiksa dan konfigurasi Docker Compose divalidasi sebelum deployment.
 
-### 3.7 Pembuatan Script Backup (scripts/backup.sh)
+```bash
+cd ~/docker-lab/bab-5
 
-Script backup.sh membuat logical backup berformat custom menggunakan pg_dump
+chmod +x scripts/backup.sh scripts/restore-test.sh
 
-melalui docker compose exec, sehingga tidak bergantung pada nama container yang dinamis.
+find . -maxdepth 3 -type f | sort
 
-Script berhenti bila terjadi galat (set -Eeuo pipefail), memastikan berkas dump tidak kosong,
+docker compose config
+```
 
-lalu membuat checksum SHA-256.
+![Gambar 9](./assets/halaman-10-gambar-01.jpeg)
 
-**Gambar/ilustrasi pada halaman ini:**
+*Gambar 9. Pemeriksaan struktur berkas dan validasi `docker compose config`.*
 
-![Ilustrasi halaman 7](./assets/halaman-07-gambar-01.jpeg)
+Service yang harus muncul pada hasil konfigurasi adalah `postgres-db` dan `pgadmin`.
 
-![Ilustrasi halaman 7](./assets/halaman-07-gambar-02.jpeg)
+```bash
+docker compose config --services
+```
 
----
+![Gambar 10](./assets/halaman-10-gambar-02.jpeg)
 
-## Halaman 8
+*Gambar 10. Daftar service pada konfigurasi Compose.*
 
-7
+## 4.10 Menjalankan Stack PostgreSQL dan pgAdmin
 
-Gambar 7. Isi file backup.sh.
+Stack dijalankan di background menggunakan Docker Compose. Setelah itu, status container dan log awal diperiksa. PostgreSQL perlu menampilkan status `healthy` sebelum pengujian dilanjutkan.
 
-### 3.8 Pembuatan Script Restore Test (scripts/restore-test.sh)
+```bash
+docker compose up -d
 
-Script restore-test.sh menguji restore pada basis data terpisah bernama labdb_restore_test,
+docker compose ps
 
-sehingga basis data sumber labdb tidak ditimpa. Script memverifikasi checksum (bila
+docker compose logs --tail 100
+```
 
-tersedia), membuat ulang basis data uji, menjalankan pg_restore, lalu menghitung jumlah
+![Gambar 11](./assets/halaman-11-gambar-01.jpeg)
 
-baris pada tabel students.
+*Gambar 11. Hasil `docker compose up -d` dan `docker compose ps` dengan status healthy.*
 
-**Gambar/ilustrasi pada halaman ini:**
+Pemeriksaan log dilakukan untuk memastikan proses inisialisasi PostgreSQL dan pgAdmin berjalan dengan baik.
 
-![Ilustrasi halaman 8](./assets/halaman-08-gambar-01.jpeg)
+![Gambar 12](./assets/halaman-11-gambar-02.jpeg)
 
----
+*Gambar 12. Log awal service PostgreSQL dan pgAdmin.*
 
-## Halaman 9
+## 4.11 Mengakses pgAdmin
 
-8
+Antarmuka pgAdmin diakses melalui alamat:
 
-Gambar 8. Isi file restore-test.sh.
-
-### 3.9 Pengaturan Permission dan Validasi Konfigurasi
-
-Kedua script diberi izin eksekusi, daftar berkas diperiksa, dan sintaks Compose divalidasi
-
-sebelum deployment.
-
-`cd ~/docker-lab/bab-5`
-`chmod +x scripts/backup.sh scripts/restore-test.sh`
-`find . -maxdepth 3 -type f | sort`
-`docker compose config`
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 9](./assets/halaman-09-gambar-01.jpeg)
-
-![Ilustrasi halaman 9](./assets/halaman-09-gambar-02.jpeg)
-
----
-
-## Halaman 10
-
-9
-
-Gambar 9. Pemeriksaan struktur berkas dan validasi docker compose config.
-
-Service yang harus muncul pada docker compose config --services adalah postgres-db dan
-
-pgadmin.
-
-`docker compose config --services`
-Gambar 10. Daftar service pada konfigurasi Compose.
-
-### 3.10 Menjalankan Stack PostgreSQL dan pgAdmin
-
-Stack dijalankan di background, kemudian status container dan log awal diperiksa. Tunggu
-
-sampai PostgreSQL berstatus healthy.
-
-`docker compose up -d`
-`docker compose ps`
-`docker compose logs --tail 100`
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 10](./assets/halaman-10-gambar-01.jpeg)
-
-![Ilustrasi halaman 10](./assets/halaman-10-gambar-02.png)
-
----
-
-## Halaman 11
-
-10
-
-Gambar 11. Hasil docker compose up -d dan docker compose ps (status healthy).
-
-Gambar 12. Log awal service PostgreSQL dan pgAdmin.
-
-Antarmuka
-
-pgAdmin
-
-diakses
-
-melalui
-
+```text
 http://localhost:5050
+```
 
-dengan
+Login menggunakan nilai `PGADMIN_DEFAULT_EMAIL` dan `PGADMIN_DEFAULT_PASSWORD` yang telah ditentukan pada file `.env`.
 
-nilai
+Server bernama **PostgreSQL Bab 5** tersedia pada panel kiri. Password PostgreSQL dimasukkan ketika diminta. Setelah koneksi berhasil, tabel `students` dapat dilihat melalui antarmuka pgAdmin.
 
-`PGADMIN_DEFAULT_EMAIL dan PGADMIN_DEFAULT_PASSWORD pada .env.`
-Server "PostgreSQL Bab 5" akan tersedia pada panel kiri, password PostgreSQL
+![Gambar 13](./assets/halaman-11-gambar-03.jpeg)
 
-dimasukkan ketika diminta, dan pada Gambar 13, di bawah ini adalah tampilan table
+*Gambar 13. Antarmuka pgAdmin yang terhubung ke server PostgreSQL Bab 5.*
 
-students.
+## 4.12 Pengujian Schema dan Data Awal
 
-Gambar 13. Antarmuka pgAdmin yang terhubung ke server PostgreSQL Bab 5.
+Pengujian dilakukan untuk memastikan init script berhasil dijalankan. Tabel `students` harus tersedia dan sedikitnya dua baris data awal telah dimasukkan.
 
-**Gambar/ilustrasi pada halaman ini:**
+Memeriksa daftar tabel:
 
-![Ilustrasi halaman 11](./assets/halaman-11-gambar-01.jpeg)
+```bash
+docker compose exec -T postgres-db \
+  psql -U labuser -d labdb \
+  -c "\dt"
+```
 
-![Ilustrasi halaman 11](./assets/halaman-11-gambar-02.jpeg)
+Memeriksa data awal:
 
-![Ilustrasi halaman 11](./assets/halaman-11-gambar-03.jpeg)
+```bash
+docker compose exec -T postgres-db \
+  psql -U labuser -d labdb \
+  -c "SELECT id, nrp, name, created_at FROM students ORDER BY id;"
+```
 
----
+![Gambar 14](./assets/halaman-12-gambar-01.jpeg)
 
-## Halaman 12
+*Gambar 14. Tabel students dan data awal hasil init script.*
 
-11
+## 4.13 Pengujian Persistensi Volume
 
-### 3.11 Pengujian Schema dan Data Awal
+Pengujian persistensi dilakukan dengan menambahkan satu record baru ke tabel `students`. Setelah itu, container dibuat ulang tanpa menghapus volume.
 
-Pengujian ini memastikan init script berjalan: tabel students harus ada dan sedikitnya dua
+Jika volume bekerja dengan benar, record `31230003` tetap tersedia setelah container dijalankan kembali.
 
-baris data awal tersedia.
+```bash
+docker compose exec -T postgres-db \
+  psql -U labuser -d labdb \
+  -c "INSERT INTO students(nrp, name) VALUES ('31230003', 'Mahasiswa Tiga') ON CONFLICT DO NOTHING;"
+```
 
-`docker compose exec -T postgres-db \`
-psql -U labuser -d labdb \
+![Gambar 15](./assets/halaman-12-gambar-02.jpeg)
 
--c "\dt"
+*Gambar 15. Penambahan record 31230003 pada tabel students.*
 
-`docker compose exec -T postgres-db \`
-psql -U labuser -d labdb \
+Container kemudian dihentikan dan dijalankan kembali tanpa menghapus volume.
 
--c "SELECT id, nrp, name, created_at FROM students ORDER BY id;"
+```bash
+docker compose down
 
-Gambar 14. Tabel students dan data awal hasil init script.
+docker compose up -d
 
-### 3.12 Pengujian Persistensi Volume
+docker compose exec -T postgres-db \
+  psql -U labuser -d labdb \
+  -c "SELECT nrp, name FROM students ORDER BY nrp;"
+```
 
-Satu record ditambahkan, lalu container dibuat ulang tanpa menghapus volume. Bila volume
+![Gambar 16](./assets/halaman-13-gambar-01.jpeg)
 
-bekerja dengan benar, record 31230003 tetap tersedia.
+*Gambar 16. Data tetap tersedia setelah `docker compose down` dan `up`.*
 
-`docker compose exec -T postgres-db \`
-psql -U labuser -d labdb \
+Hasil pengujian menunjukkan bahwa data yang tersimpan pada named volume tetap tersedia meskipun container dibuat ulang.
 
--c "INSERT INTO students(nrp, name) VALUES ('31230003', 'Mahasiswa Tiga') ON
+## 4.14 Pembuatan Backup
 
-CONFLICT DO NOTHING;"
+Backup database dibuat menggunakan script `backup.sh`. Setelah proses selesai, ukuran file dan checksum diperiksa.
 
-Gambar 15. Penambahan record 31230003 pada tabel students.
+```bash
+./scripts/backup.sh
 
-`docker compose down`
-`docker compose up -d`
-`docker compose exec -T postgres-db \`
-psql -U labuser -d labdb \
-
--c "SELECT nrp, name FROM students ORDER BY nrp;"
-
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 12](./assets/halaman-12-gambar-01.jpeg)
-
-![Ilustrasi halaman 12](./assets/halaman-12-gambar-02.jpeg)
-
----
-
-## Halaman 13
-
-12
-
-Gambar 16. Data tetap tersedia setelah docker compose down dan up.
-
-### 3.13 Pembuatan Backup
-
-Backup dibuat dengan backup.sh, kemudian ukuran berkas dan checksum-nya diperiksa.
-
-Berkas saja tidak dapat menyatakan bahwa backup berhasil, berkas harus berukuran lebih
-
-dari nol, checksum valid, dan restore harus diuji.
-
-`./scripts/backup.sh`
 ls -lh backup/
 
-`sha256sum --check backup/*.dump.sha256`
-Gambar 17. Hasil backup.sh, daftar berkas backup, dan verifikasi checksum.
+sha256sum --check backup/*.dump.sha256
+```
 
-### 3.14 Pengujian Restore
+File backup harus memiliki ukuran lebih dari nol dan checksum yang valid. Keberadaan file dump saja belum cukup untuk membuktikan bahwa proses backup berhasil.
 
-Dump terbaru dipilih secara otomatis, lalu dipulihkan ke basis data terpisah
+![Gambar 17](./assets/halaman-13-gambar-02.jpeg)
 
-labdb_restore_test dengan restore-test.sh.
+*Gambar 17. Hasil backup.sh, daftar berkas backup, dan verifikasi checksum.*
 
-`latest_dump="$(find backup -maxdepth 1 -name '*.dump' -type f | sort | tail -n 1)"`
-`./scripts/restore-test.sh "$latest_dump"`
-Gambar 18. Hasil restore-test.sh ke database labdb_restore_test.
+## 4.15 Pengujian Restore
 
-**Gambar/ilustrasi pada halaman ini:**
+File dump terbaru dipilih secara otomatis, kemudian dipulihkan ke database terpisah `labdb_restore_test`.
 
-![Ilustrasi halaman 13](./assets/halaman-13-gambar-01.jpeg)
+```bash
+latest_dump="$(find backup -maxdepth 1 -name '*.dump' -type f | sort | tail -n 1)"
 
-![Ilustrasi halaman 13](./assets/halaman-13-gambar-02.jpeg)
+./scripts/restore-test.sh "$latest_dump"
+```
 
-![Ilustrasi halaman 13](./assets/halaman-13-gambar-03.jpeg)
+![Gambar 18](./assets/halaman-14-gambar-01.jpeg)
 
----
+*Gambar 18. Hasil restore-test.sh ke database labdb_restore_test.*
 
-## Halaman 14
+Setelah proses restore selesai, isi database hasil pemulihan dibandingkan dengan database sumber.
 
-13
+```bash
+docker compose exec -T postgres-db \
+  psql -U labuser -d labdb_restore_test \
+  -c "SELECT nrp, name FROM students ORDER BY nrp;"
+```
 
-Isi basis data hasil restore dibandingkan dengan basis data sumber.
+![Gambar 19](./assets/halaman-14-gambar-02.jpeg)
 
-`docker compose exec -T postgres-db \`
-psql -U labuser -d labdb_restore_test \
+*Gambar 19. Isi tabel students pada database hasil restore.*
 
--c "SELECT nrp, name FROM students ORDER BY nrp;"
+Pengujian ini memastikan bahwa file backup dapat digunakan untuk memulihkan database tanpa menimpa database sumber.
 
-Gambar 19. Isi tabel students pada database hasil restore.
+## 4.16 Pemantauan Dasar
 
-### 3.15 Pemantauan Dasar
+Pemantauan dasar dilakukan dengan memeriksa status container, log PostgreSQL, kesiapan server menggunakan `pg_isready`, serta versi PostgreSQL.
 
-Pemantauan dasar dilakukan dengan memeriksa status container, log, kesiapan server
+```bash
+docker compose ps
 
-(pg_isready), versi PostgreSQL, serta daftar dan pemakaian volume.
+docker compose logs postgres-db --tail 100
 
-`docker compose ps`
-`docker compose logs postgres-db --tail 100`
-`docker compose exec -T postgres-db pg_isready -U labuser -d labdb`
-`docker compose exec -T postgres-db psql -U labuser -d labdb -c "SELECT version();"`
-Gambar 20. Status container, pg_isready, dan versi PostgreSQL.
+docker compose exec -T postgres-db \
+  pg_isready -U labuser -d labdb
 
-`docker volume ls`
-`docker system df -v`
-Gambar 21. Daftar volume Docker dan pemakaian disk.
+docker compose exec -T postgres-db \
+  psql -U labuser -d labdb -c "SELECT version();"
+```
 
-**Gambar/ilustrasi pada halaman ini:**
+![Gambar 20](./assets/halaman-14-gambar-03.jpeg)
 
-![Ilustrasi halaman 14](./assets/halaman-14-gambar-01.jpeg)
+*Gambar 20. Status container, pg_isready, dan versi PostgreSQL.*
 
-![Ilustrasi halaman 14](./assets/halaman-14-gambar-02.jpeg)
+Selanjutnya, daftar volume dan penggunaan disk diperiksa menggunakan perintah berikut.
 
-![Ilustrasi halaman 14](./assets/halaman-14-gambar-03.jpeg)
+```bash
+docker volume ls
 
----
+docker system df -v
+```
 
-## Halaman 15
+![Gambar 21](./assets/halaman-15-gambar-01.jpeg)
 
-14
+*Gambar 21. Daftar volume Docker dan pemakaian disk.*
 
-### 3.16 Pembersihan Lingkungan (Cleanup)
+## 4.17 Pembersihan Lingkungan (Cleanup)
 
-Cleanup dilakukan secara aman. Perintah docker compose down menghapus container dan
+Cleanup dilakukan secara aman. Perintah `docker compose down` menghapus container dan network, tetapi mempertahankan data pada volume.
 
-network tetapi mempertahankan data pada volume. Basis data hasil restore test dihapus
+Database hasil restore test dihapus secara terpisah menggunakan `dropdb`.
 
-melalui dropdb.
+```bash
+cd ~/docker-lab/bab-5
 
-`cd ~/docker-lab/bab-5`
-`docker compose down`
-`docker compose up -d postgres-db`
-`docker compose exec -T postgres-db \`
-dropdb -U labuser --if-exists labdb_restore_test
+docker compose down
 
-Gambar 22. Hasil cleanup: docker compose down dan dropdb labdb_restore_test.
+docker compose up -d postgres-db
 
-### 4. Verifikasi dan Skenario Pengujian
+docker compose exec -T postgres-db \
+  dropdb -U labuser --if-exists labdb_restore_test
+```
 
-### 4.1 Checklist Verifikasi
+![Gambar 22](./assets/halaman-15-gambar-02.jpeg)
 
-[v] PostgreSQL berjalan dengan volume pg-data.
+*Gambar 22. Hasil cleanup: docker compose down dan dropdb labdb_restore_test.*
 
-[v] Tabel students dibuat otomatis dari init script.
+# 5. Hasil Pengujian
 
-[v] pgAdmin dapat login dan terkoneksi ke database.
+Berdasarkan tahapan praktikum, dilakukan pengujian untuk memastikan layanan PostgreSQL dapat berjalan, data dapat dipertahankan, serta mekanisme backup dan restore dapat digunakan.
 
-[v] Backup menghasilkan file dump di direktori host.
+| No. | Kriteria Pengujian | Bukti |
+|---|---|---|
+| 1 | Struktur direktori dan konfigurasi lingkungan berhasil disiapkan | Gambar 1–2 |
+| 2 | File `.gitignore` berhasil dibuat | Gambar 3 |
+| 3 | Konfigurasi Docker Compose berhasil dibuat | Gambar 4 |
+| 4 | Init script PostgreSQL berhasil dikonfigurasi | Gambar 5 |
+| 5 | Pendaftaran server pgAdmin berhasil dikonfigurasi | Gambar 6 |
+| 6 | Script backup dan restore berhasil dibuat | Gambar 7–8 |
+| 7 | Validasi konfigurasi Compose berhasil dilakukan | Gambar 9–10 |
+| 8 | PostgreSQL berjalan dengan status healthy | Gambar 11–12 |
+| 9 | pgAdmin berhasil terhubung ke PostgreSQL | Gambar 13 |
+| 10 | Tabel students dan data awal tersedia | Gambar 14 |
+| 11 | Data tetap tersedia setelah container dibuat ulang | Gambar 15–16 |
+| 12 | File backup berhasil dibuat dan checksum diperiksa | Gambar 17 |
+| 13 | Restore berhasil dilakukan pada database terpisah | Gambar 18–19 |
+| 14 | Status layanan dan penggunaan volume berhasil diperiksa | Gambar 20–21 |
+| 15 | Cleanup lingkungan praktikum berhasil dilakukan | Gambar 22 |
 
-[v] Restore sudah diuji, bukan hanya diasumsikan berhasil.
+Berdasarkan bukti pengujian tersebut, tahapan praktikum mencakup konfigurasi layanan, inisialisasi database, pengujian persistensi, backup, restore, pemantauan, dan cleanup.
 
-**Gambar/ilustrasi pada halaman ini:**
+# 6. Evaluasi dan Latihan Mandiri
 
-![Ilustrasi halaman 15](./assets/halaman-15-gambar-01.jpeg)
+## 6.1 Mengapa init script tidak dijalankan ulang saat volume lama masih ada?
 
----
+Image PostgreSQL resmi hanya mengeksekusi berkas `.sql` dan `.sh` pada `/docker-entrypoint-initdb.d` ketika direktori data masih kosong, yaitu saat cluster database pertama kali diinisialisasi.
 
-## Halaman 16
+Apabila volume `pg-data` sudah berisi cluster database, proses inisialisasi akan dilewati sehingga perubahan pada init script tidak berpengaruh.
 
-15
+Perubahan skema berikutnya sebaiknya dilakukan melalui migrasi, misalnya dengan menjalankan file SQL menggunakan `psql`. Penghapusan volume hanya boleh dilakukan apabila data di dalamnya memang sudah tidak diperlukan.
 
-### 4.2 Pemetaan Bukti Pengujian
+## 6.2 Apa risiko menaruh password database pada docker-compose.yml?
 
-Tabel berikut memetakan kriteria keberhasilan pada cheatsheet Bab 5 dengan bukti yang
+Password yang ditulis langsung sebagai teks pada file konfigurasi dapat ikut ter-commit ke repository, dibagikan, atau dibaca pengguna lain.
 
-disertakan pada laporan ini.
+Nilainya juga dapat terlihat melalui `docker compose config`, `docker inspect`, atau daftar proses, serta berpotensi bocor ke log.
 
-Kriteria
+Mitigasi yang dapat diterapkan adalah:
 
-Bukti
+1. Menyimpan nilai kredensial pada `.env` yang dikecualikan dari Git.
+2. Menggunakan Docker Secrets atau secret manager pada lingkungan produksi.
+3. Melakukan rotasi kredensial secara berkala.
 
-`docker compose config tidak menghasilkan galat`
-Gambar 9, Gambar 10
+## 6.3 Bagaimana cara membuktikan backup dapat dipulihkan?
 
-PostgreSQL berstatus healthy
+Pembuktian dilakukan dengan melakukan restore ke database atau instance terpisah, bukan menimpa database sumber.
 
-Gambar 11
+Pada praktikum ini, file dump dipulihkan ke `labdb_restore_test` setelah checksum diverifikasi. Selanjutnya, jumlah dan isi baris pada tabel `students` dibandingkan dengan database sumber.
 
-Tabel students dan data awal tersedia
+Keberadaan file dump saja belum cukup untuk membuktikan bahwa backup dapat dipulihkan.
 
-Gambar 14
+## 6.4 Apa perbedaan logical backup pg_dump dan backup filesystem volume mentah?
 
-pgAdmin dapat terhubung menggunakan hostname
+Logical backup menggunakan `pg_dump` untuk mengekstrak isi database, yaitu skema dan data, melalui snapshot transaksi. Backup ini dapat dipulihkan secara selektif dan relatif portabel antarversi, tetapi membutuhkan waktu lebih lama pada database berukuran besar.
 
-postgres-db
+Sementara itu, backup filesystem volume mentah bersifat fisik karena menyalin file data secara langsung. Metode ini terikat pada versi mayor dan arsitektur PostgreSQL. Proses penyalinan juga berisiko menghasilkan data tidak konsisten atau rusak apabila dilakukan saat server berjalan tanpa mekanisme yang tepat.
 
-Gambar 13
+Contoh mekanisme backup fisik yang tepat adalah menghentikan server terlebih dahulu atau menggunakan `pg_basebackup` dan arsip WAL.
 
-Data tetap tersedia setelah docker compose down
+## 6.5 Apa dampak docker compose down -v terhadap database?
 
-dan up
+Opsi `-v` akan menghapus named volume yang dideklarasikan pada Compose, yaitu `pg-data` dan `pgadmin-data`.
 
-Gambar 15, Gambar 16
+Dampaknya adalah seluruh data PostgreSQL dan pengaturan pgAdmin yang tersimpan pada volume tersebut akan hilang. Pada saat `docker compose up` dijalankan kembali, cluster database akan dibuat dari awal dan init script dijalankan kembali.
 
-Backup dump berukuran lebih dari nol dan
+Direktori bind mount pada host, seperti `backup/`, tidak ikut terhapus.
 
-checksum valid
+# 7. Threat Statement
 
-Gambar 17
+Dalam penerapan PostgreSQL menggunakan Docker, terdapat beberapa risiko keamanan dan operasional yang perlu diperhatikan.
 
-Restore berhasil pada database labdb_restore_test
+| Risiko | Penjelasan | Mitigasi |
+|---|---|---|
+| Kredensial teks polos | `POSTGRES_PASSWORD` dan password pgAdmin disimpan pada `.env` dan diteruskan sebagai environment variable. Informasi tersebut dapat terlihat melalui `docker inspect` atau `docker compose config`. | Menggunakan Docker Secrets atau secret manager dan melakukan rotasi kredensial. |
+| Pelanggaran least privilege | `labuser` merupakan superuser awal container. Apabila akun digunakan oleh aplikasi atau script backup, kebocoran kredensial dapat berdampak pada seluruh cluster. | Menggunakan akun khusus dengan hak akses minimum. |
+| Backup berisiko di host yang sama | Dump disimpan pada direktori `backup/` di host yang sama dengan volume dan tidak dienkripsi. Kehilangan host dapat menyebabkan database dan backup hilang bersamaan. | Menyimpan backup pada lokasi terpisah dan menggunakan enkripsi. |
+| Kehilangan data karena perintah destruktif | Perintah `docker compose down -v` menghapus volume dan seluruh data di dalamnya. | Menghindari penghapusan volume sebelum memastikan backup tersedia. |
+| Tag image tidak dikunci | `dpage/pgadmin4:latest` dapat berubah kapan saja, sedangkan `postgres:16-alpine` menerima pembaruan minor otomatis. | Menggunakan versi image yang dikunci dan menguji upgrade terlebih dahulu. |
+| Healthcheck terbatas | `pg_isready` hanya membuktikan bahwa server menerima koneksi, bukan bahwa skema, data, atau query bisnis sudah benar. | Menambahkan pengujian query dan validasi data. |
+| Trafik tanpa enkripsi | Koneksi pgAdmin ke PostgreSQL menggunakan `SSLMode prefer` pada jaringan internal Compose sehingga TLS tidak diwajibkan. | Mengonfigurasi TLS sesuai kebutuhan keamanan. |
 
-Gambar 18
+# 8. Analisis
 
-Jumlah dan isi record hasil restore sesuai database
+Berdasarkan praktikum yang telah dilakukan, PostgreSQL berhasil diimplementasikan sebagai layanan database berbasis container dengan Docker Compose. Penggunaan dua service, yaitu `postgres-db` dan `pgadmin`, memudahkan pengelolaan database melalui command line maupun antarmuka web.
 
-sumber
+Penerapan named volume `pg-data` menunjukkan bahwa data database dapat dipertahankan ketika container dihentikan dan dibuat ulang. Namun, volume tetap bukan pengganti backup karena kerusakan storage atau penghapusan volume dapat menyebabkan kehilangan data.
 
-Gambar 19, Gambar 14
+Beberapa hal yang perlu diperhatikan berdasarkan hasil praktikum adalah sebagai berikut.
 
-Credential dan dump tidak masuk repository Git
+## 8.1 Pengelolaan Konfigurasi
 
-Gambar 3 (Bagian 3.3 .gitignore)
+Penggunaan file `.env` membantu memisahkan kredensial dari definisi service pada `compose.yaml`. File `.gitignore` juga berperan mencegah file konfigurasi sensitif dan hasil backup masuk ke repository.
 
-### 5. Troubleshooting dan Analisis Hasil
+Meskipun demikian, environment variable masih dapat terlihat melalui beberapa mekanisme inspeksi Docker. Oleh karena itu, pendekatan ini lebih sesuai untuk kebutuhan laboratorium daripada sistem produksi.
 
-### 5.1 Masalah yang Muncul dan Cara Diagnosis
+## 8.2 Inisialisasi Database
 
-Sebagai acuan alur diagnosis, pemeriksaan dilakukan berurutan dari status container,
+Init script pada `/docker-entrypoint-initdb.d` hanya dijalankan ketika direktori data PostgreSQL masih kosong.
 
-pembacaan log, pemeriksaan jaringan, pemeriksaan volume, baru kemudian validasi
+Apabila volume lama masih digunakan, perubahan pada `01-schema.sql` tidak otomatis diterapkan. Oleh karena itu, perubahan skema berikutnya perlu dikelola melalui mekanisme migrasi.
 
-konfigurasi. Volume tidak langsung dihapus sebelum dipastikan datanya tidak lagi
+## 8.3 Koneksi pgAdmin
 
-dibutuhkan, berikut perintah yang dijalankan untuk melakukan pemeriksaan tersebut :
+pgAdmin berjalan pada container yang berbeda dengan PostgreSQL. Oleh karena itu, hostname koneksi harus menggunakan nama service `postgres-db`, bukan `localhost`.
 
-`docker compose ps`
-`docker compose logs --tail 100`
-`docker network ls`
-`docker volume ls`
-`docker inspect <container-name>`
-`docker compose config`
-Berikut beberapa permasalahan yang dihadapi ketika melakukan praktikum :
+Penggunaan hostname service memungkinkan komunikasi melalui jaringan internal Docker Compose.
 
-Gejala
+## 8.4 Persistensi Data
 
-Pemeriksaan
+Pengujian dengan menambahkan record `31230003`, kemudian menjalankan `docker compose down` dan `docker compose up`, menunjukkan bahwa data tetap tersedia selama volume tidak dihapus.
 
-Perbaikan utama
+Hal ini membuktikan fungsi named volume dalam mempertahankan data di luar siklus hidup container.
 
-pgAdmin tidak
+## 8.5 Backup dan Restore
 
-terhubung
+Backup menggunakan `pg_dump` menghasilkan file dalam format custom. File tersebut kemudian diperiksa ukurannya dan checksum-nya menggunakan SHA-256.
 
-Host dan network
+Pengujian restore dilakukan pada database terpisah bernama `labdb_restore_test`. Isi tabel `students` pada database hasil restore kemudian dibandingkan dengan database sumber.
 
-Gunakan hostname postgres-db,
+Dengan demikian, proses backup tidak hanya dinilai berdasarkan keberadaan file, tetapi juga berdasarkan keberhasilan pemulihan data.
 
-bukan localhost
+## 8.6 Risiko Keamanan dan Operasional
 
----
+Praktikum juga menunjukkan beberapa hal yang perlu ditingkatkan, seperti pengelolaan kredensial, penggunaan akun superuser, penyimpanan backup pada host yang sama, penggunaan tag image yang tidak dikunci, serta keterbatasan healthcheck.
 
-## Halaman 17
+Hal tersebut menunjukkan bahwa keberhasilan menjalankan container belum tentu menjamin keamanan dan keandalan layanan database secara keseluruhan.
 
-16
+# 9. Tindak Lanjut
 
-Gejala
+Berdasarkan hasil praktikum dan identifikasi risiko, beberapa tindak lanjut yang dapat dilakukan adalah:
 
-Pemeriksaan
+1. Menggunakan Docker Secrets atau secret manager untuk mengelola kredensial database.
+2. Membuat akun database khusus dengan hak akses minimum sesuai prinsip least privilege.
+3. Menyimpan backup pada lokasi terpisah dari host utama.
+4. Menerapkan enkripsi pada file backup.
+5. Membuat jadwal backup secara berkala.
+6. Menentukan RPO dan RTO untuk kebutuhan pemulihan database.
+7. Melakukan pengujian restore secara rutin.
+8. Mengunci versi image PostgreSQL dan pgAdmin untuk menjaga konsistensi lingkungan.
+9. Menambahkan pengujian query dan validasi skema sebagai pelengkap healthcheck.
+10. Mengonfigurasi TLS untuk melindungi komunikasi database sesuai kebutuhan.
 
-Perbaikan utama
+# 10. Kesimpulan
 
-Password lama tetap
+Praktikum Bab 5 berhasil mengimplementasikan layanan basis data PostgreSQL dengan pgAdmin 4 menggunakan Docker Compose.
 
-berlaku
+Berdasarkan tahapan praktikum, dapat disimpulkan bahwa:
 
-Volume sudah diinisialisasi
+1. Database pada container harus diperlakukan sebagai sistem persisten. Named volume `pg-data` menjaga data tetap tersedia ketika container dibuat ulang, tetapi volume bukan pengganti backup.
+2. Konfigurasi berbasis environment variable melalui file `.env` memisahkan kredensial dari definisi service. Namun, `.env` hanya merupakan solusi untuk laboratorium dan harus dikecualikan dari Git serta digantikan dengan secret manager pada lingkungan produksi.
+3. Init script pada `docker-entrypoint-initdb.d` hanya dijalankan ketika volume masih kosong. Perubahan skema berikutnya perlu ditangani melalui migrasi.
+4. Healthcheck `pg_isready` dan konfigurasi `depends_on` dengan kondisi `service_healthy` membantu memastikan pgAdmin dijalankan setelah PostgreSQL siap. Pembatasan published port ke `127.0.0.1` dan penggunaan jaringan `data-net` juga menerapkan prinsip least exposure.
+5. Backup menggunakan `pg_dump` dengan format custom disertai checksum perlu diuji melalui restore ke database terpisah, yaitu `labdb_restore_test`, dan dibandingkan isinya dengan database sumber.
 
-Variabel init tidak mengubah
+Dengan demikian, praktikum ini memberikan pemahaman mengenai pengelolaan database dalam lingkungan container, mulai dari konfigurasi, penyimpanan persisten, akses database, backup, restore, hingga aspek keamanan dan operasional.
 
-basis data yang sudah ada; ubah
+# 11. Referensi
 
-password melalui SQL
-
-Restore gagal
-
-Checksum, versi, atau role
-
-Verifikasi checksum dan baca
-
-keluaran pg_restore
-
-### 5.2 Risiko Keamanan dan Operasional
-
-Risiko
-
-Penjelasan
-
-Kredensial teks polos
-
-`POSTGRES_PASSWORD dan password pgAdmin disimpan`
-pada .env dan diteruskan sebagai environment variable,
-
-sehingga terlihat melalui docker inspect atau docker compose
-
-config. Nilai laboratorium (labpass123, admin123) juga lemah
-
-dan mudah ditebak.
-
-Pelanggaran least
-
-privilege
-
-labuser adalah superuser awal container. Bila dipakai juga oleh
-
-aplikasi atau script backup, kebocoran kredensial berdampak
-
-pada seluruh klaster.
-
-Backup berisiko di host
-
-yang sama
-
-Dump disimpan pada direktori backup/ di host yang sama
-
-dengan volume dan tidak dienkripsi. Checksum yang disimpan
-
-berdampingan dengan dump hanya mendeteksi kerusakan,
-
-bukan pemalsuan. Kehilangan host berarti kehilangan data dan
-
-backup sekaligus.
-
-Kehilangan data karena
-
-perintah destruktif
-
-`docker compose down -v menghapus volume dan seluruh data`
-tanpa konfirmasi tambahan.
-
-Tag image tidak
-
-dikunci
-
-dpage/pgadmin4:latest dapat berubah kapan saja, dan tag
-
-postgres:16-alpine menerima pembaruan minor otomatis.
-
-Perubahan versi dapat memengaruhi kompatibilitas dan
-
-reproduksibilitas hasil.
-
-Healthcheck terbatas
-
-pg_isready hanya membuktikan server menerima koneksi,
-
-bukan bahwa skema, data, atau query bisnis benar.
-
-Trafik tanpa enkripsi
-
-Koneksi pgAdmin ke PostgreSQL memakai SSLMode prefer
-
-pada jaringan internal Compose; TLS tidak diwajibkan.
-
-### 6. Evaluasi dan Latihan Mandiri
-
-### 1. Mengapa init script tidak dijalankan ulang saat volume lama masih ada?
-
-Image PostgreSQL resmi hanya mengeksekusi berkas .sql dan .sh pada /docker-entrypoint-
-
-initdb.d ketika direktori data masih kosong, yaitu pada saat klaster basis data pertama kali
-
-diinisialisasi. Bila volume pg-data sudah berisi klaster, proses inisialisasi dilewati sehingga
-
----
-
-## Halaman 18
-
-17
-
-perubahan pada init script tidak berpengaruh. Perubahan skema berikutnya sebaiknya
-
-dilakukan lewat migrasi (misalnya menjalankan berkas SQL dengan psql). Menghapus
-
-volume hanya boleh dilakukan bila datanya memang tidak diperlukan lagi.
-
-### 2. Apa risiko menaruh password database pada docker-compose.yml?
-
-Password tertulis sebagai teks polos pada berkas yang mudah ikut ter-commit ke repository,
-
-dibagikan, atau dibaca pengguna lain. Nilainya juga mudah terlihat melalui docker compose
-
-config, docker inspect, atau daftar proses, dan dapat bocor ke log. Mitigasinya adalah
-
-menyimpan nilai pada .env yang dikecualikan dari Git (seperti pada praktikum ini),
-
-menggunakan Docker secrets atau secret manager pada lingkungan produksi, serta merotasi
-
-kredensial secara berkala.
-
-### 3. Bagaimana cara membuktikan backup dapat dipulihkan?
-
-Dengan melakukan restore ke basis data atau instance terpisah, bukan menimpa basis data
-
-sumber. Pada praktikum ini dump dipulihkan ke labdb_restore_test setelah checksum
-
-diverifikasi, lalu jumlah dan isi baris tabel students dibandingkan dengan basis data sumber.
-
-Versi PostgreSQL dan waktu restore juga dicatat. Keberadaan berkas dump saja bukan bukti.
-
-### 4. Apa bedanya logical backup pg_dump dan backup filesystem volume mentah?
-
-Logical backup oleh pg_dump mengekstrak isi basis data (skema dan data) secara konsisten
-
-melalui sebuah snapshot transaksi, dapat dipulihkan secara selektif, dan relatif portabel
-
-antarversi, tetapi memerlukan waktu lebih lama pada basis data besar. Salinan filesystem
-
-volume mentah bersifat fisik, seperti menyalin berkas data apa adanya, terikat pada versi
-
-mayor dan arsitektur PostgreSQL, serta berisiko tidak konsisten atau rusak bila diambil saat
-
-server berjalan tanpa mekanisme yang tepat (misalnya server dihentikan terlebih dahulu atau
-
-memakai pg_basebackup dan arsip WAL).
-
-### 5. Apa dampak docker compose down -v terhadap database?
-
-Opsi -v menghapus named volume yang dideklarasikan pada Compose, yaitu pg-data dan
-
-pgadmin-data, sehingga seluruh data PostgreSQL dan pengaturan pgAdmin hilang
-
-permanen. Pada docker compose up berikutnya klaster dibuat dari awal dan init script
-
-dijalankan kembali. Direktori bind mount pada host, seperti backup/, tidak ikut terhapus.
-
----
-
-## Halaman 19
-
-18
-
-### 7. Kesimpulan
-
-Praktikum Bab 5 mengimplementasikan layanan basis data PostgreSQL dengan pgAdmin 4
-
-menggunakan Docker Compose. Kesimpulan yang dapat diambil:
-
-### 1. Basis data pada container harus diperlakukan sebagai sistem persisten. Named
-
-volume pg-data menjaga data tetap ada ketika container dibuat ulang, tetapi volume
-
-bukan pengganti backup.
-
-### 2. Konfigurasi berbasis environment variable dari berkas .env memisahkan kredensial
-
-dari definisi service, namun .env hanyalah solusi laboratorium dan harus
-
-dikecualikan dari Git (.gitignore) serta digantikan secret manager pada produksi.
-
-### 3. Init script pada docker-entrypoint-initdb.d hanya dijalankan saat volume masih
-
-kosong, sehingga perubahan skema berikutnya harus ditangani melalui migrasi.
-
-### 4. Healthcheck pg_isready dengan depends_on service_healthy memastikan pgAdmin
-
-baru dijalankan setelah PostgreSQL siap, dan pembatasan published port ke
-
-127.0.0.1 serta pemakaian jaringan data-net menerapkan prinsip least exposure;
-
-keduanya tidak membuktikan kebenaran data atau skema.
-
-### 5. Backup dengan pg_dump (format custom) disertai checksum baru bernilai bila diuji
-
-melalui restore ke basis data terpisah (labdb_restore_test) dan isinya dibandingkan
-
-dengan sumber.
-
----
+Ferry Astika Saputra. (2026). *Bab 5: Database Service di Docker (PostgreSQL).* Materi Praktikum Workshop DevOps. Politeknik Elektronika Negeri Surabaya.
