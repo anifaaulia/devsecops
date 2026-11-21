@@ -1,927 +1,653 @@
-# Laporan Praktikum Bab 6: Centralized Logging dengan Fluent Bit dan PostgreSQL
+# LAPORAN PRAKTIKUM BAB 6
+# CENTRALIZED LOGGING DENGAN FLUENT BIT DAN POSTGRESQL
 
 **Mata Kuliah:** Workshop DevOps  
 **Dosen Pengampu:** Dr. Ferry Astika Saputra, S.T., M.Sc.  
 **Disusun oleh:** Anifa Aulia Abdari (3126640053)  
 **Institusi:** Politeknik Elektronika Negeri Surabaya  
+**Departemen:** Teknik Informatika dan Komputer  
 **Program Studi:** Teknik Informatika  
 **Tahun:** 2026
 
 ---
 
-LAPORAN PRAKTIKUM
-
-### BAB 6 : Centralized Logging dengan Fluent Bit dan
-
-PostgreSQL
-
-Disusun untuk memenuhi Mata Kuliah Workshop DevOps
-
-Dosen Pengampu : Dr. Ferry Astika Saputra, S.T., M.Sc.
-
-Disusun Oleh :
-
-Anifa Aulia Abdari (3126640053)
-
-Politeknik Elektronika Negeri Surabaya
-
-Departemen Teknik Informatika Dan Komputer
-
-Program Studi Teknik Informatika
-
-Tahun 2026
-
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 1](./assets/halaman-01-gambar-01.png)
-
----
-
-### 1. Tujuan Pembelajaran dan Kompetensi Utama
+## 1. Tujuan Pembelajaran dan Kompetensi Utama
 
 Setelah menyelesaikan praktikum pada Bab 6 ini, mahasiswa diharapkan mampu:
 
-1.​ Menjelaskan kebutuhan centralized logging pada lingkungan container yang
+1. Menjelaskan kebutuhan *centralized logging* pada lingkungan container yang bersifat *ephemeral*.
+2. Mengirim log stdout/stderr container ke Fluent Bit menggunakan Docker Fluentd Logging Driver.
+3. Menyimpan log ke PostgreSQL dalam kolom JSONB dan membuat view untuk analisis.
+4. Membuat log generator untuk menyimulasikan event dengan tingkat severity berbeda.
+5. Menerapkan query pencarian log dan retensi sederhana.
 
-ephemeral.
+## 2. Konsep Inti dan Landasan Teori
 
-2.​ Mengirim log stdout/stderr container ke Fluent Bit menggunakan Docker fluentd
+Container sering dibuat dan dihapus dengan cepat. Jika log hanya tersimpan di dalam container, proses debugging dan audit menjadi sulit karena log dapat ikut hilang ketika container dihapus.
 
-logging driver.
-
-3.​ Menyimpan log ke PostgreSQL dalam kolom JSONB dan membuat view analisis.
-
-4.​ Membuat log generator untuk mensimulasikan event dengan severity berbeda.
-
-5.​ Menerapkan query pencarian log dan retensi sederhana.
-
-### 2. Konsep Inti dan Landasan Teori
-
-Container sering dibuat dan dihapus dengan cepat. Jika log hanya tersimpan di dalam
-
-container, proses debugging dan audit menjadi sulit karena log ikut hilang bersama
-
-container. Centralized logging memindahkan log ke satu penyimpanan sehingga dapat
-
-dicari, dianalisis, dan diaudit secara konsisten.
+*Centralized logging* merupakan pendekatan untuk mengumpulkan log dari berbagai sumber ke dalam satu tempat penyimpanan. Dengan demikian, log dapat dicari, dianalisis, dan diaudit secara konsisten.
 
 ### 2.1 Centralized Logging dan Fluent Bit
 
-Log adalah rekaman diskrit mengenai peristiwa pada aplikasi, container, host, maupun
+Log merupakan rekaman peristiwa yang terjadi pada aplikasi, container, host, maupun kontrol keamanan. Fluent Bit berperan sebagai agen yang membaca input, melakukan parsing dan filtering, kemudian meneruskan record ke output yang telah ditentukan.
 
-kontrol keamanan. Fluent Bit berperan sebagai agen yang membaca input, melakukan
+Pada praktikum ini, aplikasi menulis log melalui stdout, kemudian Docker Logging Driver dengan jenis Fluentd meneruskannya ke Fluent Bit. Selanjutnya, Fluent Bit menyimpan log ke PostgreSQL.
 
-parsing dan filtering, lalu meneruskan record ke output yang ditentukan. Pada praktikum
-
-ini, aplikasi menulis log ke stdout, Docker logging driver fluentd meneruskannya ke Fluent
-
-Bit, dan Fluent Bit menyimpannya ke PostgreSQL. Proses logging driver dilakukan
-
-langsung oleh Docker Engine dan tidak dilakukan oleh container generator. Oleh karena
-
-itu, fluentd-address harus diarahkan ke alamat port collector yang tersedia di host, yaitu
-
-127.0.0.1:24224, bukan menggunakan nama service yang ada di Docker Compose.
+Proses logging driver dijalankan oleh Docker Engine, bukan oleh container generator. Oleh karena itu, alamat `fluentd-address` diarahkan ke alamat collector yang tersedia pada host, yaitu `127.0.0.1:24224`, sesuai konfigurasi port Fluent Bit.
 
 ### 2.2 Struktur Event dan Kualitas Data
 
-Structured logging memakai field yang konsisten seperti timestamp, severity, service,
+*Structured logging* menggunakan field yang konsisten, seperti timestamp, severity, service, event, dan request ID. Penggunaan format terstruktur memudahkan proses pencarian dan analisis log.
 
-event, dan request ID. Meskipun JSON mudah di parse, JSON yang valid belum menjamin
+Meskipun JSON mudah diproses, JSON yang valid belum tentu memiliki struktur semantik yang konsisten. Oleh karena itu, nama field, satuan durasi, dan zona waktu perlu distandarisasi.
 
-semantik yang konsisten: nama field, satuan durasi, dan zona waktu tetap harus
+Correlation ID juga dapat digunakan untuk menelusuri satu transaksi yang melibatkan beberapa komponen aplikasi.
 
-distandarisasi. Correlation ID memungkinkan satu transaksi ditelusuri lintas komponen.
+Selain itu, prinsip minimisasi data perlu diterapkan. Informasi sensitif seperti password, token, secret, dan data pribadi tidak boleh dicatat ke dalam log secara default.
 
-Prinsip minimisasi data juga berlaku: secret, token, password, dan data pribadi tidak boleh
+### 2.3 Pipeline Fluent Bit dan Format Record
 
-dicatat secara default.
+Pipeline Fluent Bit terdiri atas beberapa tahapan, yaitu input, parser, filter, buffer, dan output.
 
----
+Pada praktikum ini, plugin output PostgreSQL menyimpan record ke dalam tiga kolom utama:
 
-## Halaman PDF 3
+| Field | Makna |
+|---|---|
+| `tag` | Klasifikasi sumber log, misalnya `docker.bab-6-generator-auth-1`. |
+| `time` | Timestamp ketika log diterima oleh collector. |
+| `data` | Record log lengkap dalam format JSONB. |
+| `container_name` | Nama container penghasil log yang tersimpan di dalam `data`. |
+| `source` | Sumber log, yaitu stdout atau stderr, yang tersimpan di dalam `data`. |
+| `log` | Pesan aplikasi. JSON dari aplikasi tetap tersimpan sebagai string pada `data.log`. |
 
-### 2.3 Pipeline Fluent bit dan Format Record
-
-Pipeline Fluent Bit terdiri atas input, parser, filter, buffer, dan output. Plugin output
-
-PostgreSQL menyimpan record pada tiga kolom, yaitu tag, time, dan data.
-
-Field
-
-Makna
-
-tag
-
-Klasifikasi sumber log, misalnya docker.bab-6-generator-auth-1
-
-atau pmb.pmb-lab-registration-api-1
-
-time
-
-Timestamp log diterima collector
-
-data
-
-Record log penuh dalam format JSONB
-
-container_name
-
-Nama container penghasil log (di dalam data)
-
-source
-
-stdout atau stderr (di dalam data)
-
-log
-
-Pesan aplikasi; JSON dari aplikasi tetap tersimpan sebagai string pada
-
-data.log
-
-Schema logs dipilih melalui search_path akun PostgreSQL, tidak melalui opsi Schema atau
-
-Timestamp_Key pada konfigurasi Fluent Bit. Pesan aplikasi berbentuk JSON masih
-
-tersimpan sebagai string pada data.log.
+Schema `logs` dipilih melalui `search_path` akun PostgreSQL, bukan melalui opsi Schema atau `Timestamp_Key` pada konfigurasi Fluent Bit. Pesan aplikasi berbentuk JSON masih tersimpan sebagai string pada `data.log`.
 
 ### 2.4 PostgreSQL sebagai Backend Laboratorium
 
-PostgreSQL mudah digunakan untuk mempelajari schema, query, indeks, dan retensi.
+PostgreSQL digunakan sebagai backend penyimpanan log karena mendukung pengelolaan schema, query, indeks, dan tipe data JSONB.
 
-Namun database relasional tidak selalu efisien untuk volume log yang sangat besar; untuk
+Penggunaan JSONB memungkinkan record log disimpan dalam bentuk terstruktur sehingga field tertentu dapat dicari dan dianalisis menggunakan query SQL.
 
-produksi perlu dievaluasi sistem seperti Loki, OpenSearch, atau ClickHouse. Retensi juga
+Namun, database relasional tidak selalu menjadi pilihan paling efisien untuk penyimpanan log dengan volume sangat besar. Pada lingkungan produksi, sistem seperti Loki, OpenSearch, atau ClickHouse dapat dipertimbangkan sesuai kebutuhan.
 
-harus menjadi kebijakan eksplisit: menyimpan semua log tanpa batas menaikkan biaya dan
-
-risiko privasi, sedangkan apabila menghapus terlalu cepat akan menghilangkan evidence
-
-insiden.
+Kebijakan retensi juga perlu ditentukan secara eksplisit. Penyimpanan log tanpa batas dapat meningkatkan kebutuhan storage dan risiko privasi, sedangkan penghapusan log terlalu cepat dapat menghilangkan bukti yang diperlukan untuk analisis insiden.
 
 ### 2.5 Reliability dan Backpressure
 
-Backpressure terjadi ketika proses pengiriman data lebih lambat dibandingkan data yang
+*Backpressure* terjadi ketika proses pengiriman data berjalan lebih lambat dibandingkan jumlah data yang masuk.
 
-masuk. Buffer memori memiliki kinerja yang cepat, tetapi datanya dapat hilang ketika
+Buffer memori memiliki kinerja yang cepat, tetapi data di dalamnya berisiko hilang ketika proses berhenti. Sementara itu, filesystem buffering menyimpan data sementara pada media penyimpanan sehingga lebih tahan terhadap gangguan proses.
 
-proses berhenti. Sementara itu, buffer filesystem lebih tahan terhadap gangguan, meskipun
+Pada praktikum ini, Fluent Bit menggunakan `storage.type filesystem` untuk menyimpan data sementara ketika PostgreSQL tidak tersedia.
 
-berisiko memenuhi kapasitas disk. Dalam praktikum ini, Fluent Bit menggunakan
-
-storage.type filesystem untuk menyimpan data sementara di volume ketika PostgreSQL
-
-tidak tersedia. Mekanisme ini menunjukkan bahwa pipeline dapat pulih dalam pengujian
-
-skala lab, tetapi belum menjamin setiap event diproses tepat satu kali (exactly-once).
+Mekanisme tersebut membantu pipeline melakukan pemulihan dalam pengujian skala laboratorium. Namun, mekanisme retry dan buffering belum menjamin setiap event diproses tepat satu kali atau *exactly-once*. Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau penghentian proses secara paksa dapat mengakibatkan kehilangan event.
 
 ---
 
-## Halaman PDF 4
+## 3. Langkah Praktikum
 
-Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau
+Praktikum pada laporan ini berfokus pada pembangunan pipeline centralized logging menggunakan tiga log generator. Pengujian dilakukan mulai dari penyiapan direktori dan konfigurasi, menjalankan pipeline, memeriksa penyimpanan log pada PostgreSQL, menguji buffering, hingga membersihkan resource praktikum.
 
-penghentian proses secara paksa dapat mengakibatkan kehilangan event.
-
-### 2.6 Korelasi Event dan Redaksi Data pada Aplikasi PMB
-
-Aplikasi PMB memberi setiap request HTTP sebuah request_id (header X-Request-ID).
-
-Nilai
-
-dari
-
-client
-
-hanya
-
-diterima
-
-bila
-
-cocok
-
-dengan
-
-pola
-
-^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$; selain itu server membuat ID baru berawalan
-
-REQ-. ID diteruskan dari registration-api ke auth-service melalui header, disimpan pada
-
-kolom registrations.request_id, lalu dipakai kembali oleh verification-worker, sehingga
-
-satu pendaftaran dapat ditelusuri lintas tiga service. Setiap event dicetak sebagai satu baris
-
-JSON oleh fungsi emit_event, yang menyamarkan nilai field bernama authorization,
-
-cookie, password, passwd, secret, session, atau token menjadi [REDACTED] dan
-
-memotong string lebih dari 1000 karakter. Nama dan email pendaftar tidak pernah
-
-dimasukkan ke log; pendaftaran hanya dicatat melalui user_ref, registration_id (UUID),
-
-dan program.
-
-### 3. Langkah Praktikum
-
-Praktikum terdiri atas dua bagian. Bagian A (3.1-3.15) membangun pipeline dasar dengan
-
-tiga log generator. Bagian B (3.16-3.26) menerapkan pipeline yang sama pada aplikasi
-
-PMB dengan skenario baseline, insiden, recovery, dan resilience. Kedua bagian memakai
-
-port host 24224 dan 2020, sehingga Bagian A harus dibersihkan (3.15) sebelum Bagian B
-
-dijalankan.
+Pembahasan implementasi centralized logging pada aplikasi PMB dipisahkan dari laporan ini.
 
 ### 3.1 Penyiapan Direktori Kerja dan Struktur Proyek
 
-Direktori kerja Bab 6 dibuat beserta subdirektori init, fluent-bit, queries, dan scripts agar
+Langkah pertama adalah membuat direktori kerja Bab 6 beserta subdirektori yang diperlukan. Struktur direktori digunakan untuk memisahkan file konfigurasi, initialization script, query analisis, dan script pengujian.
 
-berkas konfigurasi, bind mount, dan laporan terpisah dari bab lain.
+Direktori yang digunakan terdiri atas `init`, `fluent-bit`, `queries`, dan `scripts`. Pemisahan tersebut bertujuan agar file konfigurasi, bind mount, dan script praktikum tersusun secara terstruktur.
 
-Gambar 1. Pembuatan struktur direktori kerja Bab 6.
+![Gambar 1. Struktur direktori kerja Bab 6](./assets/halaman-04-gambar-01.png)
+
+*Gambar 1. Struktur direktori kerja Bab 6*
 
 ### 3.2 Pembuatan Template Konfigurasi (.env.example) dan Konfigurasi Aktif
 
-File .env.example berisi parameter laboratorium: nama database, akun administrator
+File `.env.example` dibuat untuk menyediakan template konfigurasi lingkungan praktikum. File ini berisi parameter yang diperlukan oleh Docker Compose, seperti nama database, akun administrator PostgreSQL, serta akun `fluentbit_user` yang digunakan untuk proses ingest log.
 
-PostgreSQL, dan akun fluentbit_user untuk proses ingest. Nilainya hanya kredensial
+Template tersebut kemudian disalin menjadi file `.env` sebagai konfigurasi aktif. File `.env` berisi nilai kredensial yang digunakan selama praktikum sehingga tidak boleh dimasukkan ke repository Git.
 
-sintetis untuk pembelajaran dan tidak boleh dipakai pada sistem produksi. Template disalin
+File `.env` memudahkan proses interpolasi variabel pada Docker Compose, tetapi bukan merupakan pengganti secret manager.
 
-**Gambar/ilustrasi pada halaman ini:**
+![Gambar 2. Isi file .env.example](./assets/halaman-05-gambar-01.png)
 
-![Ilustrasi halaman 4](./assets/halaman-04-gambar-01.png)
+*Gambar 2. Isi file .env.example*
 
----
+![Gambar 3. Pengaturan variabel lingkungan praktikum](./assets/halaman-05-gambar-02.png)
 
-## Halaman PDF 5
+*Gambar 3. Pengaturan variabel lingkungan praktikum*
 
-menjadi .env dan izin aksesnya dibatasi hanya untuk pemilik berkas. File .env
+Setelah file konfigurasi aktif dibuat, permission file `.env` dibatasi agar hanya pemilik file yang dapat mengaksesnya.
 
-memudahkan interpolasi Compose, tetapi bukan secret manager.
+![Gambar 4. Pengaturan permission file .env](./assets/halaman-05-gambar-03.png)
 
-Gambar 3. Isi file .env.example
-
-Gambar 3. Permission .env
+*Gambar 4. Pengaturan permission file .env*
 
 ### 3.3 Pembuatan File .gitignore
 
-File .gitignore mencegah .env, berkas *.log, dan direktori reports/ ikut terkirim ke
+File `.gitignore` dibuat untuk mencegah file yang bersifat lokal dan sensitif ikut dikirim ke repository GitHub.
 
-repository Git. Volume PostgreSQL dan buffer Fluent Bit dikelola Docker sehingga tidak
+Beberapa file dan direktori yang perlu dikecualikan antara lain:
 
-perlu dimasukkan.
+- File `.env` yang berisi kredensial aktif.
+- File log dengan ekstensi `.log`.
+- Direktori `reports/` yang berisi hasil atau bukti pengujian lokal.
 
-Gambar 4. Isi file .gitignore.
+Volume PostgreSQL dan buffer Fluent Bit dikelola oleh Docker sehingga tidak perlu dimasukkan ke repository.
+
+![Gambar 5. Isi file .gitignore](./assets/halaman-06-gambar-01.png)
+
+*Gambar 5. Isi file .gitignore*
 
 ### 3.4 Konfigurasi Orkestrasi compose.yaml
 
-File compose.yaml mendefinisikan lima service: postgres-db (PostgreSQL 16 Alpine),
+File `compose.yaml` dibuat untuk mendefinisikan layanan yang dibutuhkan dalam pipeline centralized logging.
 
-fluent-bit (image 4.2.8), serta tiga log generator (generator-auth, generator-api,
+Konfigurasi ini mendefinisikan lima service, yaitu:
 
-generator-worker), dua named volume (pg-data dan flb-storage), dan bridge network
+1. `postgres-db` menggunakan PostgreSQL 16 Alpine sebagai backend penyimpanan log.
+2. `fluent-bit` menggunakan image Fluent Bit versi 4.2.8 sebagai collector dan pengirim log.
+3. `generator-auth` sebagai generator log autentikasi.
+4. `generator-api` sebagai generator log API.
+5. `generator-worker` sebagai generator log worker.
 
-logging-net. Beberapa keputusan desain penting:
+Selain service tersebut, konfigurasi menggunakan dua named volume, yaitu `pg-data` untuk menyimpan data PostgreSQL dan `flb-storage` untuk menyimpan buffer Fluent Bit. Seluruh service terhubung melalui bridge network bernama `logging-net`.
 
-a.​ Port PostgreSQL tidak dipublikasikan ke host; Fluent Bit mengaksesnya lewat
+Beberapa keputusan konfigurasi yang diterapkan adalah sebagai berikut.
 
-jaringan internal logging-net.
+a. Port PostgreSQL tidak dipublikasikan ke host. Fluent Bit mengakses PostgreSQL melalui jaringan internal `logging-net`.
 
-b.​ Fluent Bit mempublikasikan port 24224 (Forward) dan 2020 (monitoring) hanya ke
+b. Fluent Bit mempublikasikan port `24224` untuk Forward Input dan port `2020` untuk monitoring. Kedua port hanya diikat ke alamat `127.0.0.1`.
 
-127.0.0.1.
+c. Konfigurasi `depends_on` dengan kondisi `service_healthy` digunakan agar Fluent Bit berjalan setelah PostgreSQL dinyatakan sehat.
 
-c.​ depends_on dengan service_healthy memastikan Fluent Bit baru berjalan setelah
+d. Setiap generator menggunakan logging driver `fluentd` dengan `fluentd-async: "true"` dan tag `docker.{{.Name}}`.
 
-PostgreSQL sehat.
+e. Setiap generator mencetak 20 baris log JSON dengan interval satu detik. Ketiga generator menghasilkan severity yang berbeda, yaitu INFO untuk auth, WARN untuk API, dan ERROR untuk worker.
 
-d.​ Setiap generator memakai logging driver fluentd dengan fluentd-async: "true" dan
+![Gambar 6. Konfigurasi service pada Docker Compose](./assets/halaman-06-gambar-02.png)
 
-tag docker.{{.Name}}, sehingga kegagalan collector tidak langsung menggagalkan
+*Gambar 6. Konfigurasi service pada Docker Compose*
 
-startup container.
+![Gambar 7. Konfigurasi logging driver Docker](./assets/halaman-07-gambar-01.png)
 
-e.​ Setiap generator mencetak 20 baris JSON (satu per detik) dengan severity berbeda:
-
-INFO (auth), WARN (api), dan ERROR (worker).
-
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 5](./assets/halaman-05-gambar-01.png)
-
-![Ilustrasi halaman 5](./assets/halaman-05-gambar-02.png)
-
-![Ilustrasi halaman 5](./assets/halaman-05-gambar-03.png)
-
----
-
-## Halaman PDF 6
-
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 6](./assets/halaman-06-gambar-01.png)
-
-![Ilustrasi halaman 6](./assets/halaman-06-gambar-02.png)
-
----
-
-## Halaman PDF 7
-
-Gambar 5. Isi file compose.yaml.
+*Gambar 7. Konfigurasi logging driver Docker*
 
 ### 3.5 Pembuatan Init Script (init/01-init-logging.sh)
 
-Berkas 01-init-logging.sh dijalankan sekali oleh image PostgreSQL ketika direktori data
+File `01-init-logging.sh` dibuat untuk menginisialisasi struktur database PostgreSQL ketika direktori data masih kosong.
 
-masih kosong. Script ini membuat role fluentbit_user, schema logs, tabel logs.fluentbit
+Script ini menjalankan beberapa proses, yaitu:
 
-(kolom tag, time, data JSONB), tiga indeks (waktu, tag, dan GIN pada data), serta view
+1. Membuat role `fluentbit_user` untuk proses ingest log.
+2. Membuat schema `logs`.
+3. Membuat tabel `logs.fluentbit`.
+4. Menentukan kolom `tag`, `time`, dan `data` dengan tipe data JSONB pada kolom `data`.
+5. Membuat indeks berdasarkan waktu, tag, dan GIN pada kolom `data`.
+6. Membuat view `logs.recent_logs` untuk menampilkan log terbaru.
 
-logs.recent_logs. Role ingest diberi search_path ke schema logs dan hak USAGE,
+Role `fluentbit_user` diberikan hak akses `USAGE` dan `CREATE` pada schema serta hak `SELECT` dan `INSERT` pada tabel. Hak `CREATE` diperlukan karena plugin PostgreSQL dapat melakukan bootstrap tabel.
 
-`CREATE pada schema serta SELECT, INSERT pada tabel. Hak CREATE diperlukan`
-karena plugin PostgreSQL dapat melakukan bootstrap tabel; pada produksi, bootstrap
+Pada lingkungan produksi, proses bootstrap sebaiknya dipisahkan dari akun ingest agar hak akses yang diberikan lebih terbatas.
 
-sebaiknya dipisahkan dari akun ingest.
+![Gambar 8. Initialization script PostgreSQL](./assets/halaman-07-gambar-02.png)
 
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 7](./assets/halaman-07-gambar-01.png)
-
-![Ilustrasi halaman 7](./assets/halaman-07-gambar-02.png)
-
----
-
-## Halaman PDF 8
-
-Gambar 6. Isi file 01-init-logging.sh.
+*Gambar 8. Initialization script PostgreSQL*
 
 ### 3.6 Konfigurasi Fluent Bit (fluent-bit/fluent-bit.conf)
 
-Konfigurasi terdiri atas empat bagian:
+File `fluent-bit.conf` digunakan untuk mengatur proses penerimaan, pemrosesan, buffering, dan pengiriman log.
 
-a.​ [SERVICE]: flush 1 detik, storage.path /var/log/flb-storage, checksum aktif, dan
+Konfigurasi Fluent Bit terdiri atas beberapa bagian utama:
 
-HTTP server pada port 2020 untuk monitoring.
+a. **SERVICE**
 
-b.​ [INPUT] forward: mendengarkan port 24224 dengan Mem_Buf_Limit 10M dan
+Bagian ini mengatur interval flush selama satu detik, lokasi penyimpanan buffer pada `/var/log/flb-storage`, pengaktifan checksum, serta HTTP server untuk monitoring pada port `2020`.
 
-storage.type filesystem.
+b. **INPUT**
 
-c.​ [OUTPUT] pgsql: menulis ke postgres-db memakai kredensial dari environment
+Bagian input menggunakan plugin `forward` yang mendengarkan log melalui port `24224`. Konfigurasi ini juga menggunakan `Mem_Buf_Limit 10M` dan `storage.type filesystem`.
 
-variable, dengan storage.total_limit_size 256M sebagai batas backlog.
+c. **OUTPUT PostgreSQL**
 
-d.​ [OUTPUT] stdout: jalur observasi tambahan dalam format json_lines.
+Bagian output mengatur pengiriman log ke service `postgres-db` menggunakan kredensial dari environment variable. Konfigurasi `storage.total_limit_size 256M` digunakan untuk membatasi ukuran backlog.
 
-Gambar 7. Isi file fluent-bit.conf.
+d. **OUTPUT stdout**
+
+Output tambahan menggunakan stdout dengan format `json_lines` untuk membantu proses observasi record selama pengujian.
+
+![Gambar 9. Konfigurasi Fluent Bit](./assets/halaman-08-gambar-01.png)
+
+*Gambar 9. Konfigurasi Fluent Bit*
 
 ### 3.7 Pembuatan Query Analisis (queries/analysis.sql)
 
-Berkas analysis.sql berisi lima query:
+File `analysis.sql` dibuat untuk melakukan pemeriksaan dan analisis terhadap log yang telah tersimpan pada PostgreSQL.
 
-a.​ jumlah event dan rentang waktu,
+Query yang disiapkan meliputi:
 
-b.​ distribusi per tag,
+a. Menghitung jumlah event dan rentang waktu log.
 
-c.​ metadata container pada 15 record terbaru,
+b. Menampilkan distribusi log berdasarkan tag.
 
-d.​ pencarian severity ERROR pada field data.log, dan
+c. Menampilkan metadata container dari 15 record terbaru.
 
-e.​ ringkasan jumlah event per menit.
+d. Mencari severity ERROR pada field `data.log`.
 
-**Gambar/ilustrasi pada halaman ini:**
+e. Menampilkan ringkasan jumlah event berdasarkan interval satu menit.
 
-![Ilustrasi halaman 8](./assets/halaman-08-gambar-01.png)
+Query tersebut digunakan untuk memastikan data log telah tersimpan dan dapat dianalisis menggunakan SQL.
 
-![Ilustrasi halaman 8](./assets/halaman-08-gambar-02.png)
+![Gambar 10. Query analisis log](./assets/halaman-08-gambar-02.png)
 
----
-
-## Halaman PDF 9
-
-Gambar 8. Isi file analysis.sql.
+*Gambar 10. Query analisis log*
 
 ### 3.8 Pembuatan Script generate-logs.sh dan test-buffering.sh
 
-generate-logs.sh menjalankan PostgreSQL dan Fluent Bit, menunggu endpoint
+Dua script dibuat untuk membantu otomatisasi proses pengujian centralized logging.
 
-/api/v1/health siap (maksimal 30 percobaan), lalu membuat ulang ketiga generator dengan
+**a. generate-logs.sh**
 
---force-recreate.test-buffering.sh mencatat jumlah record awal, menghentikan PostgreSQL,
+Script ini digunakan untuk menjalankan PostgreSQL dan Fluent Bit, kemudian menunggu endpoint health hingga siap. Proses penantian dilakukan dengan maksimal 30 percobaan.
 
-menjalankan generator selama 25 detik, menyalakan PostgreSQL kembali, menunggu
+Setelah layanan siap, script membuat ulang ketiga container generator menggunakan opsi `--force-recreate`.
 
-pg_isready, lalu memeriksa apakah jumlah record bertambah. Kedua script memakai set
+![Gambar 11. Script generate-logs.sh](./assets/halaman-09-gambar-01.png)
 
--Eeuo pipefail agar berhenti saat terjadi galat.
+*Gambar 11. Script generate-logs.sh*
 
-Gambar 9. Isi file generate-logs.sh.
+**b. test-buffering.sh**
 
-**Gambar/ilustrasi pada halaman ini:**
+Script ini digunakan untuk menguji kemampuan filesystem buffering ketika PostgreSQL tidak tersedia.
 
-![Ilustrasi halaman 9](./assets/halaman-09-gambar-01.png)
+Tahapan pengujiannya meliputi:
 
-![Ilustrasi halaman 9](./assets/halaman-09-gambar-02.png)
+1. Mencatat jumlah record awal pada PostgreSQL.
+2. Menghentikan service PostgreSQL.
+3. Menjalankan generator selama 25 detik.
+4. Menyalakan kembali PostgreSQL.
+5. Menunggu PostgreSQL siap melalui `pg_isready`.
+6. Memeriksa apakah jumlah record bertambah setelah backend kembali tersedia.
 
----
+Kedua script menggunakan `set -Eeuo pipefail` agar proses berhenti ketika terjadi kesalahan.
 
-## Halaman PDF 10
+![Gambar 12. Script test-buffering.sh](./assets/halaman-09-gambar-02.png)
 
-Gambar 10. Isi file test-buffering.sh.
+*Gambar 12. Script test-buffering.sh*
 
 ### 3.9 Pengaturan Permission dan Validasi Konfigurasi
 
-Script diberi izin eksekusi, sintaks Bash diperiksa dengan bash -n, dan konfigurasi
+Setelah seluruh file konfigurasi dan script dibuat, langkah berikutnya adalah memberikan izin eksekusi pada script dan melakukan validasi.
 
-Compose divalidasi sebelum deployment.
+Perintah yang digunakan:
 
-Gambar 11. Validasi sintaks script dan docker compose config.
+```bash
+chmod +x scripts/*.sh
 
-Konfigurasi Fluent Bit juga divalidasi tanpa menjalankan seluruh stack:
+bash -n scripts/generate-logs.sh
+bash -n scripts/test-buffering.sh
 
-`docker compose run --rm --no-deps fluent-bit \--dry-run`
-\--config=/fluent-bit/etc/fluent-bit.conf
+docker compose config
+```
 
-**Gambar/ilustrasi pada halaman ini:**
+Validasi tersebut dilakukan untuk memastikan sintaks Bash dan konfigurasi Docker Compose tidak memiliki kesalahan.
 
-![Ilustrasi halaman 10](./assets/halaman-10-gambar-01.png)
+Konfigurasi Fluent Bit juga divalidasi tanpa menjalankan seluruh stack menggunakan perintah:
 
-![Ilustrasi halaman 10](./assets/halaman-10-gambar-02.png)
+```bash
+docker compose run --rm --no-deps fluent-bit \
+  --dry-run \
+  --config=/fluent-bit/etc/fluent-bit.conf
+```
 
-![Ilustrasi halaman 10](./assets/halaman-10-gambar-03.png)
+![Gambar 13. Validasi sintaks Bash](./assets/halaman-10-gambar-01.png)
 
----
+*Gambar 13. Validasi sintaks Bash*
 
-## Halaman PDF 11
+![Gambar 14. Validasi konfigurasi Docker Compose](./assets/halaman-10-gambar-02.png)
 
-Gambar 12. Validasi konfigurasi Fluent Bit.
+*Gambar 14. Validasi konfigurasi Docker Compose*
+
+![Gambar 15. Validasi konfigurasi Fluent Bit](./assets/halaman-10-gambar-03.png)
+
+*Gambar 15. Validasi konfigurasi Fluent Bit*
 
 ### 3.10 Menjalankan Pipeline dan Menghasilkan Log
 
-Pipeline dijalankan dengan generate-logs.sh, kemudian status semua container diperiksa
+Setelah konfigurasi berhasil divalidasi, pipeline dijalankan menggunakan script `generate-logs.sh`.
 
-setelah sekitar 25 detik. Ketiga generator diharapkan berstatus Exited (0) karena prosesnya
+Perintah yang digunakan:
 
-selesai setelah 20 baris, sedangkan PostgreSQL dan Fluent Bit tetap Up.
+```bash
+./scripts/generate-logs.sh
 
-`./scripts/generate-logs.sh`
-`sleep 25`
-`docker compose ps --all`
-Gambar 13. Hasil menjalankan pipeline dan status container.
+sleep 25
+
+docker compose ps --all
+```
+
+Setelah proses berjalan, status seluruh container diperiksa.
+
+Ketiga container generator diharapkan berstatus `Exited (0)` karena proses menghasilkan 20 baris log kemudian selesai. Sementara itu, PostgreSQL dan Fluent Bit tetap berjalan untuk menyimpan dan memproses log.
+
+![Gambar 16. Proses menjalankan pipeline centralized logging](./assets/halaman-11-gambar-01.png)
+
+*Gambar 16. Proses menjalankan pipeline centralized logging*
+
+![Gambar 17. Pemeriksaan status container](./assets/halaman-11-gambar-02.png)
+
+*Gambar 17. Pemeriksaan status container*
 
 ### 3.11 Pemeriksaan Monitoring Fluent Bit
 
-Endpoint monitoring hanya diikat ke 127.0.0.1.
+Fluent Bit menyediakan endpoint monitoring untuk memeriksa kondisi layanan dan statistik pemrosesan log.
 
-`curl -fsS http://127.0.0.1:2020/api/v1/health`
-`curl -fsS http://127.0.0.1:2020/api/v1/metrics`
-Gambar 14. Health dan metrics Fluent Bit.
+Pemeriksaan dilakukan menggunakan perintah:
+
+```bash
+curl -fsS http://127.0.0.1:2020/api/v1/health
+
+curl -fsS http://127.0.0.1:2020/api/v1/metrics
+```
+
+Endpoint health digunakan untuk memeriksa kondisi layanan, sedangkan endpoint metrics digunakan untuk melihat statistik aktivitas Fluent Bit.
+
+Port monitoring hanya diikat ke `127.0.0.1` sehingga tidak dibuka secara langsung ke seluruh jaringan.
+
+![Gambar 18. Pemeriksaan health dan metrics Fluent Bit](./assets/halaman-11-gambar-03.png)
+
+*Gambar 18. Pemeriksaan health dan metrics Fluent Bit*
 
 ### 3.12 Verifikasi Record pada PostgreSQL
 
-Query analisis dijalankan melalui docker compose exec dengan memuat variabel dari .env.
+Setelah pipeline berjalan, langkah berikutnya adalah memastikan log berhasil disimpan pada PostgreSQL.
 
-`set -a`
-`source .env`
-`set +a`
-**Gambar/ilustrasi pada halaman ini:**
+Query analisis dijalankan melalui container PostgreSQL dengan memuat variabel lingkungan dari file `.env`.
 
-![Ilustrasi halaman 11](./assets/halaman-11-gambar-01.png)
+Perintah yang digunakan:
 
-![Ilustrasi halaman 11](./assets/halaman-11-gambar-02.png)
+```bash
+set -a
+source .env
+set +a
 
-![Ilustrasi halaman 11](./assets/halaman-11-gambar-03.png)
+docker compose exec -T postgres-db \
+  psql \
+  --username "$POSTGRES_USER" \
+  --dbname "$POSTGRES_DB" \
+  --file /dev/stdin \
+  < queries/analysis.sql
+```
 
----
+Hasil query digunakan untuk memeriksa jumlah event, distribusi tag, metadata container, severity ERROR, dan agregasi log per menit.
 
-## Halaman PDF 12
+Selain itu, view `logs.recent_logs` diperiksa menggunakan perintah:
 
-`docker compose exec -T postgres-db \`
-psql \
+```bash
+docker compose exec -T postgres-db \
+  psql --username "$POSTGRES_USER" \
+  --dbname "$POSTGRES_DB" \
+  --command 'TABLE logs.recent_logs;'
+```
 
---username "$POSTGRES_USER" \
+Pemeriksaan tersebut memastikan bahwa record log telah tersimpan pada tabel PostgreSQL dan dapat ditampilkan melalui view yang telah dibuat.
 
---dbname "$POSTGRES_DB" \
+![Gambar 19. Hasil query analisis log pada PostgreSQL](./assets/halaman-12-gambar-01.png)
 
---file /dev/stdin \
+*Gambar 19. Hasil query analisis log pada PostgreSQL*
 
-< queries/analysis.sql
+![Gambar 20. Pemeriksaan view logs.recent_logs](./assets/halaman-12-gambar-02.png)
 
-Gambar 15. Hasil query analisis log.
-
-View recent_logs dan tipe data kolom data diperiksa secara terpisah:
-
-`docker compose exec -T postgres-db \`
-psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-
---command 'TABLE logs.recent_logs;'
-
-**Gambar/ilustrasi pada halaman ini:**
-
-![Ilustrasi halaman 12](./assets/halaman-12-gambar-01.png)
-
-![Ilustrasi halaman 12](./assets/halaman-12-gambar-02.png)
-
----
-
-## Halaman PDF 13
-
-Gambar 16. Isi view logs.recent_logs.
+*Gambar 20. Pemeriksaan view logs.recent_logs*
 
 ### 3.13 Pengujian Buffering dan Pemulihan
 
-Pengujian ini membuktikan bahwa Fluent Bit tetap berjalan dan menahan event saat
+Pengujian buffering dilakukan untuk membuktikan bahwa Fluent Bit dapat menahan event sementara ketika PostgreSQL tidak tersedia.
 
-PostgreSQL dihentikan sementara, lalu mengirimkannya setelah backend pulih.
+Pengujian dijalankan menggunakan script:
 
-`./scripts/test-buffering.sh`
-Gambar 17. Hasil test-buffering.sh.
+```bash
+./scripts/test-buffering.sh
+```
 
-Selama PostgreSQL berhenti, retry Fluent Bit dan kondisi volume diperiksa
+Script akan menghentikan PostgreSQL sementara, menjalankan log generator, kemudian menyalakan kembali PostgreSQL.
 
-`docker compose logs --tail 200 fluent-bit`
-`docker volume ls`
-**Gambar/ilustrasi pada halaman ini:**
+Selama PostgreSQL berhenti, Fluent Bit diharapkan tetap berjalan dan menyimpan data sementara menggunakan filesystem buffer.
 
-![Ilustrasi halaman 13](./assets/halaman-13-gambar-01.png)
+Setelah PostgreSQL kembali tersedia, Fluent Bit melakukan retry untuk mengirimkan data yang sebelumnya tertahan.
 
-![Ilustrasi halaman 13](./assets/halaman-13-gambar-02.png)
+Kondisi tersebut dapat diperiksa menggunakan perintah:
 
----
+```bash
+docker compose logs --tail 200 fluent-bit
 
-## Halaman PDF 14
+docker volume ls
+```
 
-Gambar 18. Log retry Fluent Bit saat PostgreSQL berhenti.
+Pengujian ini menunjukkan kemampuan pipeline dalam melakukan pemulihan setelah backend mengalami gangguan sementara.
+
+![Gambar 21. Hasil pengujian filesystem buffering](./assets/halaman-13-gambar-01.png)
+
+*Gambar 21. Hasil pengujian filesystem buffering*
+
+![Gambar 22. Log retry Fluent Bit ketika PostgreSQL tidak tersedia](./assets/halaman-13-gambar-02.png)
+
+*Gambar 22. Log retry Fluent Bit ketika PostgreSQL tidak tersedia*
 
 ### 3.14 Verifikasi Pembatasan Jaringan
 
-PostgreSQL tidak boleh memiliki published port. Hal ini diperiksa pada kolom PORTS:
+Salah satu aspek keamanan yang diterapkan pada praktikum ini adalah tidak mempublikasikan port PostgreSQL secara langsung ke host.
 
-`docker compose ps`
-Gambar 19. Port PostgreSQL tidak dipublikasikan ke host.
+Pemeriksaan dilakukan menggunakan perintah:
+
+```bash
+docker compose ps
+```
+
+Pada hasil pemeriksaan, service PostgreSQL tidak seharusnya memiliki published port. Fluent Bit tetap dapat mengakses PostgreSQL melalui jaringan internal Docker, yaitu `logging-net`.
+
+Pembatasan tersebut mengurangi paparan layanan database terhadap jaringan host.
+
+![Gambar 23. Verifikasi port PostgreSQL tidak dipublikasikan ke host](./assets/halaman-14-gambar-01.png)
+
+*Gambar 23. Verifikasi port PostgreSQL tidak dipublikasikan ke host*
 
 ### 3.15 Pembersihan Lingkungan (Cleanup)
 
-`docker compose down menghapus container dan network tetapi mempertahankan data`
-pada volume. Opsi --volumes bersifat destruktif karena menghapus tabel log dan backlog
+Setelah seluruh pengujian selesai, resource praktikum dapat dibersihkan menggunakan Docker Compose.
 
-Fluent Bit, sehingga hanya dijalankan setelah evidence disimpan.
+Perintah berikut digunakan untuk menghapus container dan network, tetapi tetap mempertahankan named volume:
 
-`docker compose down --remove-orphans`
-`docker compose down --volumes --remove-orphans`
-Gambar 20. Hasil cleanup Bagian A
+```bash
+docker compose down --remove-orphans
+```
 
-**Gambar/ilustrasi pada halaman ini:**
+Apabila seluruh data praktikum sudah tidak diperlukan, container, network, dan volume dapat dihapus menggunakan perintah:
 
-![Ilustrasi halaman 14](./assets/halaman-14-gambar-01.png)
+```bash
+docker compose down --volumes --remove-orphans
+```
 
-![Ilustrasi halaman 14](./assets/halaman-14-gambar-02.png)
+Perintah dengan opsi `--volumes` bersifat destruktif karena menghapus data PostgreSQL dan buffer Fluent Bit. Oleh karena itu, perintah tersebut hanya dijalankan setelah seluruh bukti pengujian disimpan.
 
-![Ilustrasi halaman 14](./assets/halaman-14-gambar-03.png)
+![Gambar 24. Hasil proses cleanup container dan network](./assets/halaman-14-gambar-02.png)
+
+*Gambar 24. Hasil proses cleanup container dan network*
+
+![Gambar 25. Dokumentasi akhir praktikum](./assets/halaman-14-gambar-03.png)
+
+*Gambar 25. Dokumentasi akhir praktikum*
 
 ---
 
-## Halaman PDF 22
-
-### 4. Verifikasi dan Skenario Pengujian
+## 4. Verifikasi dan Skenario Pengujian
 
 ### 4.1 Checklist Verifikasi
 
-[v] PostgreSQL berjalan dengan volume pg-data.
+Checklist berikut digunakan untuk memastikan setiap komponen pada praktikum Centralized Logging telah berjalan sesuai dengan tujuan pengujian.
 
-[v] Tabel students dibuat otomatis dari init script.
+**Checklist Pengujian Pipeline Log Generator:**
 
-[v] pgAdmin dapat login dan terkoneksi ke database.
-
-[v] Backup menghasilkan file dump di direktori host.
-
-[v] Restore sudah diuji, bukan hanya diasumsikan berhasil.
+- [x] Struktur direktori dan konfigurasi lingkungan Bab 6 berhasil dibuat.
+- [x] File `.env.example`, `.env`, dan `.gitignore` berhasil dikonfigurasi.
+- [x] Docker Compose berhasil mendefinisikan service PostgreSQL, Fluent Bit, dan tiga log generator.
+- [x] Initialization script berhasil membuat role, schema, tabel, indeks, dan view pada PostgreSQL.
+- [x] Fluent Bit berhasil dikonfigurasi untuk menerima log melalui Forward Input pada port `24224`.
+- [x] Ketiga container generator menghasilkan log dengan severity INFO, WARN, dan ERROR.
+- [x] Validasi sintaks Bash, konfigurasi Docker Compose, dan konfigurasi Fluent Bit berhasil dilakukan.
+- [x] Endpoint health dan metrics Fluent Bit berhasil diakses melalui port `2020`.
+- [x] Record log berhasil disimpan ke PostgreSQL menggunakan tipe data JSONB.
+- [x] Query analisis berhasil menampilkan jumlah event, distribusi tag, metadata container, severity ERROR, dan agregasi log per menit.
+- [x] Pengujian filesystem buffering dan proses recovery setelah PostgreSQL kembali berjalan berhasil dilakukan.
+- [x] Port PostgreSQL tidak dipublikasikan secara langsung ke host.
+- [x] Resource praktikum berhasil dibersihkan setelah seluruh bukti pengujian disimpan.
 
 ### 4.2 Pemetaan Bukti Pengujian
 
-Tabel berikut memetakan kriteria keberhasilan pengujian pada Bagian A dan Bagian B
+Tabel berikut memetakan kriteria keberhasilan praktikum Centralized Logging dengan bukti gambar pada bagian langkah praktikum.
 
-berdasarkan evidence yang diperoleh selama praktikum.
+| Kriteria Pengujian | Bukti |
+|---|---|
+| Pembuatan struktur direktori kerja. | Gambar 1 |
+| Konfigurasi file lingkungan dan permission `.env`. | Gambar 2–4 |
+| Pembuatan file `.gitignore`. | Gambar 5 |
+| Konfigurasi service dan logging driver Docker Compose. | Gambar 6–7 |
+| Pembuatan initialization script PostgreSQL. | Gambar 8 |
+| Konfigurasi Fluent Bit. | Gambar 9 |
+| Pembuatan query analisis log. | Gambar 10 |
+| Pembuatan script generator dan buffering. | Gambar 11–12 |
+| Validasi sintaks Bash dan konfigurasi. | Gambar 13–15 |
+| Menjalankan pipeline dan memeriksa status container. | Gambar 16–17 |
+| Pemeriksaan monitoring Fluent Bit. | Gambar 18 |
+| Verifikasi penyimpanan log dan view PostgreSQL. | Gambar 19–20 |
+| Pengujian buffering dan retry. | Gambar 21–22 |
+| Verifikasi pembatasan port PostgreSQL. | Gambar 23 |
+| Pembersihan resource praktikum. | Gambar 24–25 |
 
-No.
-
-Kriteria Pengujian
-
-Bukti
-
-Bagian A – Pipeline Log Generator
-
-1
-
-Struktur direktori dan konfigurasi lingkungan berhasil
-
-disiapkan.
-
-Gambar 1–3
-
-2
-
-File .gitignore dan konfigurasi Docker Compose berhasil
-
-dibuat.
-
-Gambar 4–5
-
-3
-
-Init script PostgreSQL berhasil dikonfigurasi.
-
-Gambar 6
-
-4
-
-Konfigurasi Fluent Bit dan query analisis berhasil dibuat.
-
-Gambar 7–8
-
-5
-
-Script generator log dan pengujian buffering berhasil dibuat.
-
-Gambar 9–10
-
-6
-
-Validasi sintaks, Docker Compose, dan konfigurasi Fluent Bit
-
-berhasil dilakukan.
-
-Gambar 11–12
-
-7
-
-Pipeline berjalan dan seluruh generator menghasilkan log.
-
-Gambar 13
+Berdasarkan hasil pengujian tersebut, pipeline centralized logging berhasil dibangun menggunakan Docker Fluentd Logging Driver, Fluent Bit, dan PostgreSQL. Pengujian memverifikasi bahwa log dari container dapat diterima, diproses, disimpan, dan dianalisis melalui sistem penyimpanan terpusat.
 
 ---
 
-## Halaman PDF 23
+## 5. Troubleshooting dan Analisis Hasil
 
-8
+### 5.1 Masalah yang Muncul dan Cara Diagnosis
 
-Monitoring Fluent Bit menunjukkan bahwa endpoint health
+Diagnosis dilakukan secara bertahap mulai dari pemeriksaan status container, pembacaan log service, pemeriksaan port dan jaringan, hingga validasi konfigurasi.
 
-dan metrics dapat diakses.
+Volume tidak langsung dihapus sebelum dipastikan bahwa data di dalamnya tidak lagi diperlukan.
 
-Gambar 14
+Beberapa perintah pemeriksaan yang dapat digunakan adalah:
 
-9
+```bash
+docker compose ps
 
-Record berhasil disimpan dan dianalisis pada PostgreSQL.
+docker compose logs --tail 100
 
-Gambar 15–16
+docker network ls
 
-10
+docker volume ls
 
-Buffering dan pemulihan pengiriman log berhasil diuji.
+docker compose config
+```
 
-Gambar 17–18
+Beberapa gejala yang mungkin ditemukan selama praktikum beserta pemeriksaan dan perbaikannya adalah sebagai berikut.
 
-11
+| Gejala | Pemeriksaan | Perbaikan |
+|---|---|---|
+| Log generator tidak dapat mengirim log ke Fluent Bit. | Periksa status Fluent Bit, port Forward `24224`, dan konfigurasi `fluentd-address`. | Pastikan Fluent Bit berjalan dan alamat collector mengarah ke `127.0.0.1:24224` sesuai konfigurasi Docker Engine. |
+| Container generator gagal dijalankan. | Periksa `docker compose ps -a` dan log container terkait. | Perbaiki konfigurasi logging driver atau parameter environment yang menyebabkan container gagal berjalan. |
+| Fluent Bit tidak dapat terhubung ke PostgreSQL. | Periksa `docker compose logs fluent-bit` dan status PostgreSQL. | Pastikan service PostgreSQL sehat, hostname `postgres-db` benar, dan kredensial ingest sesuai. |
+| Record log tidak ditemukan pada PostgreSQL. | Periksa jumlah record pada tabel `logs.fluentbit`, tag, serta log Fluent Bit. | Pastikan input Forward menerima data dan output PostgreSQL berhasil melakukan pengiriman. |
+| Initialization script tidak diterapkan. | Periksa apakah named volume `pg-data` sudah berisi data sebelumnya. | Jalankan migrasi SQL secara terpisah atau inisialisasi ulang hanya jika data lama memang boleh dihapus. |
+| Pengiriman log tertunda ketika PostgreSQL berhenti. | Periksa log retry Fluent Bit dan kondisi filesystem buffer. | Pulihkan PostgreSQL, lalu pastikan Fluent Bit dapat melanjutkan pengiriman log. |
 
-Port PostgreSQL tidak dipublikasikan ke host.
+### 5.2 Risiko Keamanan dan Operasional
 
-Gambar 19
+Selain memastikan pipeline berjalan, aspek keamanan dan operasional juga perlu diperhatikan.
 
-12
-
-Seluruh resource Bagian A berhasil dibersihkan.
-
-Gambar 20
-
-Bagian B – Implementasi Aplikasi PMB
-
-13
-
-Konfigurasi lingkungan dan validasi berhasil dijalankan.
-
-Gambar 21
-
-14
-
-Seluruh service PMB berhasil dijalankan.
-
-Gambar 22
-
-15
-
-Health aplikasi dan Fluent Bit dapat diperiksa.
-
-Gambar 23
-
-16
-
-Pendaftaran normal berhasil dengan status VERIFIED.
-
-Gambar 24
-
-17
-
-Failure injection menghasilkan status FAILED.
-
-Gambar 25
-
-18
-
-Rekonstruksi kronologi berdasarkan Request ID berhasil
-
-dilakukan.
-
-Gambar 26–27
-
-19
-
-Agregasi event dan severity berhasil dilakukan.
-
-Gambar 28
-
-20
-
-Aplikasi berhasil memproses transaksi setelah recovery.
-
-Gambar 29
-
-21
-
-Fluent Bit melakukan retry dan mengirimkan log setelah
-
-database pulih.
-
-Gambar 30
-
-22
-
-Pemeriksaan duplikasi record berhasil dilakukan.
-
-Gambar 31
+| Risiko | Penjelasan |
+|---|---|
+| Kredensial tersimpan dalam konfigurasi | File `.env` berisi kredensial yang diteruskan sebagai environment variable. File tersebut harus dikecualikan dari Git dan aksesnya dibatasi. Untuk produksi, gunakan Docker Secrets atau secret manager. |
+| Hak akses akun ingest terlalu luas | Akun `fluentbit_user` memperoleh hak yang diperlukan plugin untuk melakukan ingest dan bootstrap tabel. Pada lingkungan produksi, hak pembuatan schema atau tabel sebaiknya dipisahkan dari akun ingest. |
+| Log memuat data sensitif | Password, token, cookie, secret, dan data pribadi yang tercatat dapat menyebabkan kebocoran informasi. Terapkan minimisasi data dan redaksi sebelum log disimpan. |
+| Buffer memenuhi kapasitas penyimpanan | Gangguan backend yang berlangsung lama dapat membuat backlog bertambah hingga batas buffer tercapai. Pantau kapasitas disk dan tetapkan kebijakan penanganan backlog. |
+| Duplikasi atau kehilangan event | Mekanisme retry tidak menjamin exactly-once. Event dapat terduplikasi atau hilang ketika buffer penuh maupun proses berhenti secara paksa. |
+| Retensi log tidak dikelola | Penyimpanan tanpa batas meningkatkan kebutuhan storage dan risiko privasi. Tentukan masa retensi sesuai kebutuhan operasional dan audit. |
+| PostgreSQL terekspos ke jaringan host | Published port yang tidak diperlukan dapat memperluas permukaan serangan. Pada praktikum ini, port PostgreSQL tidak dipublikasikan ke host dan komunikasi antarlayanan dilakukan melalui jaringan internal Docker. |
+| Monitoring dianggap sebagai bukti kebenaran aplikasi | Status health dan metrics Fluent Bit menunjukkan kondisi pipeline, tetapi tidak otomatis membuktikan bahwa isi log lengkap atau seluruh fungsi aplikasi berjalan benar. Lakukan verifikasi record dan query secara terpisah. |
 
 ---
 
-## Halaman PDF 24
+## 6. Evaluasi dan Latihan Mandiri
 
-23
+### 1. Mengapa centralized logging diperlukan pada lingkungan container?
 
-Pemeriksaan kerahasiaan data dan unit test berhasil.
+Container memiliki karakteristik ephemeral, yaitu dapat dibuat, dihentikan, dan dihapus dalam waktu singkat. Apabila log hanya disimpan di dalam container, data log berisiko ikut hilang ketika container dihapus.
 
-Gambar 32
+Centralized logging diperlukan untuk mengumpulkan log dari berbagai container ke dalam satu tempat penyimpanan terpusat. Dengan demikian, log tetap dapat diakses meskipun container sumber sudah tidak berjalan.
 
-24
+Selain itu, centralized logging memudahkan proses debugging, monitoring, analisis kesalahan, dan audit karena informasi aktivitas sistem dapat ditelusuri melalui satu sumber data.
 
-Evidence dan checksum konfigurasi berhasil dikumpulkan.
+### 2. Apa peran Docker Fluentd Logging Driver dan Fluent Bit dalam proses pengiriman log?
 
-Gambar 33
+Docker Fluentd Logging Driver berfungsi meneruskan log yang dihasilkan container melalui stdout dan stderr menuju collector Fluent Bit.
 
-25
+Sementara itu, Fluent Bit bertugas menerima log, melakukan pemrosesan record, buffering, dan meneruskan data ke sistem penyimpanan, yaitu PostgreSQL.
 
-Seluruh resource Docker berhasil dibersihkan.
+Pada praktikum ini, alur pengiriman log adalah:
 
-Gambar 34
+**Application → Docker Fluentd Logging Driver → Fluent Bit → PostgreSQL**
 
-Berdasarkan pemetaan tersebut, pengujian pada Bagian A berhasil memverifikasi pipeline
+Docker Engine menjalankan proses pengiriman melalui logging driver. Oleh karena itu, alamat collector dikonfigurasi menggunakan `127.0.0.1:24224`, sesuai port Fluent Bit yang tersedia pada host.
 
-pengiriman dan penyimpanan log menggunakan Fluent Bit dan PostgreSQL. Sementara
+### 3. Mengapa PostgreSQL menggunakan tipe data JSONB untuk menyimpan log?
 
-itu, Bagian B menguji penerapan pipeline pada aplikasi PMB melalui skenario normal,
+JSONB digunakan karena data log memiliki struktur yang terdiri atas beberapa field, seperti timestamp, severity, service, event, dan informasi container.
 
-kegagalan, recovery, dan resilience logging.
+Dengan menggunakan JSONB, PostgreSQL dapat menyimpan record log dalam format terstruktur dan mendukung pencarian berdasarkan field tertentu.
 
-### 5. Evaluasi dan Latihan Mandiri
+Selain itu, PostgreSQL menyediakan indeks GIN yang dapat membantu mempercepat pencarian dan analisis data JSONB.
 
-### 1. Mengapa init script tidak dijalankan ulang saat volume lama masih ada?
+Pada praktikum ini, record log disimpan pada tabel `logs.fluentbit` dengan tiga kolom utama, yaitu `tag`, `time`, dan `data`.
 
-Image
+### 4. Apa fungsi filesystem buffering pada Fluent Bit ketika PostgreSQL tidak tersedia?
 
-PostgreSQL
+Filesystem buffering berfungsi menyimpan sementara data log pada media penyimpanan ketika tujuan pengiriman, yaitu PostgreSQL, sedang mengalami gangguan atau tidak dapat diakses.
 
-resmi
+Dengan mekanisme ini, Fluent Bit tetap dapat menerima log dan menahan data sementara pada buffer sebelum mencoba mengirimkannya kembali ketika PostgreSQL sudah pulih.
 
-hanya
+Pada praktikum ini, pengujian dilakukan dengan menghentikan PostgreSQL sementara, menjalankan log generator, kemudian menyalakan kembali PostgreSQL.
 
-mengeksekusi
+Setelah backend kembali tersedia, Fluent Bit melakukan retry untuk mengirimkan data yang sebelumnya tertahan.
 
-berkas
+Namun, filesystem buffering belum menjamin mekanisme exactly-once. Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau penghentian proses secara paksa tetap berisiko menyebabkan kehilangan event.
 
-.sql
+### 5. Bagaimana cara memastikan sistem centralized logging berjalan dengan baik dan aman?
 
-dan
+Sistem centralized logging perlu diperiksa melalui beberapa aspek, yaitu:
 
-.sh
+1. Memastikan container PostgreSQL dan Fluent Bit berjalan dengan baik melalui perintah `docker compose ps`.
+2. Memeriksa endpoint health dan metrics Fluent Bit untuk mengetahui kondisi serta statistik pemrosesan log.
+3. Memastikan record log berhasil masuk ke tabel `logs.fluentbit` pada PostgreSQL.
+4. Menjalankan query untuk memeriksa jumlah event, distribusi severity, sumber container, dan waktu pencatatan.
+5. Melakukan pengujian buffering dan recovery ketika PostgreSQL tidak tersedia sementara.
+6. Membatasi akses jaringan PostgreSQL, mengelola kredensial dengan aman, serta menghindari pencatatan password, token, secret, dan informasi pribadi.
 
-pada
-
-/docker-entrypoint-initdb.d ketika direktori data masih kosong, yaitu pada saat klaster basis
-
-data pertama kali diinisialisasi. Bila volume pg-data sudah berisi klaster, proses inisialisasi
-
-dilewati sehingga perubahan pada init script tidak berpengaruh. Perubahan skema
-
-berikutnya sebaiknya dilakukan lewat migrasi (misalnya menjalankan berkas SQL dengan
-
-psql). Menghapus volume hanya boleh dilakukan bila datanya memang tidak diperlukan
-
-lagi.
-
-### 2. Apa risiko menaruh password database pada docker-compose.yml?
-
-Password tertulis sebagai teks polos pada berkas yang mudah ikut ter-commit ke repository,
-
-dibagikan, atau dibaca pengguna lain. Nilainya juga mudah terlihat melalui docker
-
-compose config, docker inspect, atau daftar proses, dan dapat bocor ke log. Mitigasinya
-
-adalah menyimpan nilai pada .env yang dikecualikan dari Git (seperti pada praktikum ini),
-
-menggunakan Docker secrets atau secret manager pada lingkungan produksi, serta
-
-merotasi kredensial secara berkala.
-
-### 3. Bagaimana cara membuktikan backup dapat dipulihkan?
-
-Dengan melakukan restore ke basis data atau instance terpisah, bukan menimpa basis data
-
-sumber. Pada praktikum ini dump dipulihkan ke labdb_restore_test setelah checksum
-
-diverifikasi, lalu jumlah dan isi baris tabel students dibandingkan dengan basis data
-
-sumber. Versi PostgreSQL dan waktu restore juga dicatat. Keberadaan berkas dump saja
-
-bukan bukti.
+Dengan melakukan pemeriksaan tersebut, sistem dapat dipastikan mampu mengumpulkan, menyimpan, dan menyediakan data log untuk kebutuhan monitoring serta analisis ketika terjadi gangguan.
 
 ---
 
-## Halaman PDF 25
+## 7. Kesimpulan
 
-### 4. Apa bedanya logical backup pg_dump dan backup filesystem volume mentah?
+Berdasarkan praktikum Bab 6 mengenai Centralized Logging dengan Fluent Bit dan PostgreSQL, dapat disimpulkan beberapa hal berikut:
 
-Logical backup oleh pg_dump mengekstrak isi basis data (skema dan data) secara
+1. Centralized logging memungkinkan log dari container yang bersifat ephemeral dikumpulkan ke dalam penyimpanan terpusat sehingga dapat dicari, dianalisis, dan diaudit. Pada praktikum ini, pipeline dibangun menggunakan Docker Fluentd Logging Driver, Fluent Bit, dan PostgreSQL.
 
-konsisten melalui sebuah snapshot transaksi, dapat dipulihkan secara selektif, dan relatif
+2. Docker Fluentd Logging Driver berperan dalam meneruskan log dari stdout dan stderr container menuju Fluent Bit. Selanjutnya, Fluent Bit menerima, memproses, dan mengirimkan record log ke PostgreSQL menggunakan format JSONB.
 
-portabel antarversi, tetapi memerlukan waktu lebih lama pada basis data besar. Salinan
+3. Penggunaan structured logging dan query SQL memudahkan proses analisis log berdasarkan tag, waktu, metadata container, dan severity. Dengan demikian, informasi aktivitas dari berbagai container dapat diperiksa secara lebih terstruktur.
 
-filesystem volume mentah bersifat fisik, seperti menyalin berkas data apa adanya, terikat
+4. Filesystem buffering pada Fluent Bit membantu mempertahankan data sementara ketika PostgreSQL tidak tersedia. Mekanisme retry memungkinkan proses pengiriman log dilanjutkan setelah backend kembali berjalan, meskipun belum menjamin pengiriman exactly-once.
 
-pada versi mayor dan arsitektur PostgreSQL, serta berisiko tidak konsisten atau rusak bila
+5. Keamanan centralized logging perlu diperhatikan melalui pembatasan akses jaringan, pengelolaan kredensial, perlindungan data sensitif, serta penerapan kebijakan retensi log. PostgreSQL dapat digunakan sebagai backend pada lingkungan laboratorium, sedangkan lingkungan produksi memerlukan evaluasi lebih lanjut terhadap kapasitas, keamanan, dan kebutuhan penyimpanan.
 
-diambil saat server berjalan tanpa mekanisme yang tepat (misalnya server dihentikan
-
-terlebih dahulu atau memakai pg_basebackup dan arsip WAL).
-
-### 5. Apa dampak docker compose down -v terhadap database?
-
-Command ini menghapus container, network, dan named volume seperti pg-data dan
-
-pgadmin-data, sehingga data database dan konfigurasi pgAdmin hilang. Saat dijalankan
-
-kembali, PostgreSQL diinisialisasi ulang. Data pada bind mount host, seperti folder
-
-backup/, tetap tersimpan.
-
-### 7. Kesimpulan
-
-1.​ Centralized logging memindahkan log dari container yang ephemeral ke
-
-penyimpanan terpusat sehingga dapat dicari dan diaudit. Pipeline stdout, Docker
-
-fluentd driver, Fluent Bit, dan PostgreSQL JSONB berhasil diimplementasikan
-
-pada log generator dan aplikasi PMB.
-
-2.​ Structured log dengan field konsisten dan request_id memungkinkan satu transaksi
-
-PMB ditelusuri lintas registration-api, auth-service, dan verification-worker;
-
-redaksi data sensitif serta minimisasi data menjaga log bebas dari kredensial dan
-
-data pribadi pendaftar.
-
-3.​ Status container yang sehat tidak membuktikan fungsi bisnis yang sehat. Gangguan
-
-timeout pada verifikasi hanya dapat didiagnosis dari event WARN dan ERROR
-
-pada log terpusat, bukan dari status proses.
-
-4.​ Buffer filesystem Fluent Bit memungkinkan pemulihan setelah database log
-
-berhenti, tetapi pipeline belum menjamin exactly-once; duplikasi dan kehilangan
-
-event tetap mungkin.
-
-5.​ PostgreSQL sesuai sebagai backend laboratorium. Untuk produksi diperlukan TLS,
-
-secret manager, kebijakan retensi, kontrol akses, dan evaluasi log backend yang
-
-lebih sesuai untuk volume besar.
-
----
+Dengan demikian, praktikum ini memberikan pemahaman mengenai proses implementasi centralized logging, mulai dari pengumpulan log container, pemrosesan menggunakan Fluent Bit, penyimpanan pada PostgreSQL, hingga pengujian buffering dan recovery ketika terjadi gangguan pada sistem.
