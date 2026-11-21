@@ -23,27 +23,15 @@ Setelah menyelesaikan praktikum pada Bab 6 ini, mahasiswa diharapkan mampu:
 
 ## 2. Konsep Inti dan Landasan Teori
 
-Container sering dibuat dan dihapus dengan cepat. Jika log hanya tersimpan di dalam container, proses debugging dan audit menjadi sulit karena log dapat ikut hilang ketika container dihapus.
-
-*Centralized logging* merupakan pendekatan untuk mengumpulkan log dari berbagai sumber ke dalam satu tempat penyimpanan. Dengan demikian, log dapat dicari, dianalisis, dan diaudit secara konsisten.
+Container sering dibuat dan dihapus dengan cepat. Jika log hanya tersimpan di dalam container, proses debugging dan audit menjadi sulit karena log dapat ikut hilang ketika container dihapus. *Centralized logging* merupakan pendekatan untuk mengumpulkan log dari berbagai sumber ke dalam satu tempat penyimpanan. Dengan demikian, log dapat dicari, dianalisis, dan diaudit secara konsisten.
 
 ### 2.1 Centralized Logging dan Fluent Bit
 
-Log merupakan rekaman peristiwa yang terjadi pada aplikasi, container, host, maupun kontrol keamanan. Fluent Bit berperan sebagai agen yang membaca input, melakukan parsing dan filtering, kemudian meneruskan record ke output yang telah ditentukan.
-
-Pada praktikum ini, aplikasi menulis log melalui stdout, kemudian Docker Logging Driver dengan jenis Fluentd meneruskannya ke Fluent Bit. Selanjutnya, Fluent Bit menyimpan log ke PostgreSQL.
-
-Proses logging driver dijalankan oleh Docker Engine, bukan oleh container generator. Oleh karena itu, alamat `fluentd-address` diarahkan ke alamat collector yang tersedia pada host, yaitu `127.0.0.1:24224`, sesuai konfigurasi port Fluent Bit.
+Log merupakan rekaman peristiwa yang terjadi pada aplikasi, container, host, maupun kontrol keamanan. Fluent Bit berperan sebagai agen yang membaca input, melakukan parsing dan filtering, kemudian meneruskan record ke output yang telah ditentukan. Pada praktikum ini, aplikasi menulis log melalui stdout, kemudian Docker Logging Driver dengan jenis Fluentd meneruskannya ke Fluent Bit. Selanjutnya, Fluent Bit menyimpan log ke PostgreSQL. Proses logging driver dijalankan oleh Docker Engine, bukan oleh container generator. Oleh karena itu, alamat `fluentd-address` diarahkan ke alamat collector yang tersedia pada host, yaitu `127.0.0.1:24224`, sesuai konfigurasi port Fluent Bit.
 
 ### 2.2 Struktur Event dan Kualitas Data
 
-*Structured logging* menggunakan field yang konsisten, seperti timestamp, severity, service, event, dan request ID. Penggunaan format terstruktur memudahkan proses pencarian dan analisis log.
-
-Meskipun JSON mudah diproses, JSON yang valid belum tentu memiliki struktur semantik yang konsisten. Oleh karena itu, nama field, satuan durasi, dan zona waktu perlu distandarisasi.
-
-Correlation ID juga dapat digunakan untuk menelusuri satu transaksi yang melibatkan beberapa komponen aplikasi.
-
-Selain itu, prinsip minimisasi data perlu diterapkan. Informasi sensitif seperti password, token, secret, dan data pribadi tidak boleh dicatat ke dalam log secara default.
+*Structured logging* menggunakan field yang konsisten, seperti timestamp, severity, service, event, dan request ID. Penggunaan format terstruktur memudahkan proses pencarian dan analisis log. Meskipun JSON mudah diproses, JSON yang valid belum tentu memiliki struktur semantik yang konsisten. Oleh karena itu, nama field, satuan durasi, dan zona waktu perlu distandarisasi. Correlation ID juga dapat digunakan untuk menelusuri satu transaksi yang melibatkan beberapa komponen aplikasi. Selain itu, prinsip minimisasi data perlu diterapkan. Informasi sensitif seperti password, token, secret, dan data pribadi tidak boleh dicatat ke dalam log secara default.
 
 ### 2.3 Pipeline Fluent Bit dan Format Record
 
@@ -64,37 +52,23 @@ Schema `logs` dipilih melalui `search_path` akun PostgreSQL, bukan melalui opsi 
 
 ### 2.4 PostgreSQL sebagai Backend Laboratorium
 
-PostgreSQL digunakan sebagai backend penyimpanan log karena mendukung pengelolaan schema, query, indeks, dan tipe data JSONB.
-
-Penggunaan JSONB memungkinkan record log disimpan dalam bentuk terstruktur sehingga field tertentu dapat dicari dan dianalisis menggunakan query SQL.
-
-Namun, database relasional tidak selalu menjadi pilihan paling efisien untuk penyimpanan log dengan volume sangat besar. Pada lingkungan produksi, sistem seperti Loki, OpenSearch, atau ClickHouse dapat dipertimbangkan sesuai kebutuhan.
-
-Kebijakan retensi juga perlu ditentukan secara eksplisit. Penyimpanan log tanpa batas dapat meningkatkan kebutuhan storage dan risiko privasi, sedangkan penghapusan log terlalu cepat dapat menghilangkan bukti yang diperlukan untuk analisis insiden.
+PostgreSQL digunakan sebagai backend penyimpanan log karena mendukung pengelolaan schema, query, indeks, dan tipe data JSONB. Penggunaan JSONB memungkinkan record log disimpan dalam bentuk terstruktur sehingga field tertentu dapat dicari dan dianalisis menggunakan query SQL. Namun, database relasional tidak selalu menjadi pilihan paling efisien untuk penyimpanan log dengan volume sangat besar. Pada lingkungan produksi, sistem seperti Loki, OpenSearch, atau ClickHouse dapat dipertimbangkan sesuai kebutuhan. Kebijakan retensi juga perlu ditentukan secara eksplisit. Penyimpanan log tanpa batas dapat meningkatkan kebutuhan storage dan risiko privasi, sedangkan penghapusan log terlalu cepat dapat menghilangkan bukti yang diperlukan untuk analisis insiden.
 
 ### 2.5 Reliability dan Backpressure
 
-*Backpressure* terjadi ketika proses pengiriman data berjalan lebih lambat dibandingkan jumlah data yang masuk.
-
-Buffer memori memiliki kinerja yang cepat, tetapi data di dalamnya berisiko hilang ketika proses berhenti. Sementara itu, filesystem buffering menyimpan data sementara pada media penyimpanan sehingga lebih tahan terhadap gangguan proses.
-
-Pada praktikum ini, Fluent Bit menggunakan `storage.type filesystem` untuk menyimpan data sementara ketika PostgreSQL tidak tersedia.
-
-Mekanisme tersebut membantu pipeline melakukan pemulihan dalam pengujian skala laboratorium. Namun, mekanisme retry dan buffering belum menjamin setiap event diproses tepat satu kali atau *exactly-once*. Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau penghentian proses secara paksa dapat mengakibatkan kehilangan event.
+*Backpressure* terjadi ketika proses pengiriman data berjalan lebih lambat dibandingkan jumlah data yang masuk. Buffer memori memiliki kinerja yang cepat, tetapi data di dalamnya berisiko hilang ketika proses berhenti. Sementara itu, filesystem buffering menyimpan data sementara pada media penyimpanan sehingga lebih tahan terhadap gangguan proses. Pada praktikum ini, Fluent Bit menggunakan `storage.type filesystem` untuk menyimpan data sementara ketika PostgreSQL tidak tersedia. Mekanisme tersebut membantu pipeline melakukan pemulihan dalam pengujian skala laboratorium. Namun, mekanisme retry dan buffering belum menjamin setiap event diproses tepat satu kali atau *exactly-once*. Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau penghentian proses secara paksa dapat mengakibatkan kehilangan event.
 
 ---
 
 ## 3. Langkah Praktikum
 
-Praktikum pada laporan ini berfokus pada pembangunan pipeline centralized logging menggunakan tiga log generator. Pengujian dilakukan mulai dari penyiapan direktori dan konfigurasi, menjalankan pipeline, memeriksa penyimpanan log pada PostgreSQL, menguji buffering, hingga membersihkan resource praktikum.
+Praktikum pada laporan ini berfokus pada pembangunan pipeline centralized logging menggunakan tiga log generator. Pengujian dilakukan mulai dari penyiapan direktori dan konfigurasi, menjalankan pipeline, memeriksa penyimpanan log pada PostgreSQL, menguji buffering, hingga membersihkan resource praktikum. 
 
 Pembahasan implementasi centralized logging pada aplikasi PMB dipisahkan dari laporan ini.
 
 ### 3.1 Penyiapan Direktori Kerja dan Struktur Proyek
 
-Langkah pertama adalah membuat direktori kerja Bab 6 beserta subdirektori yang diperlukan. Struktur direktori digunakan untuk memisahkan file konfigurasi, initialization script, query analisis, dan script pengujian.
-
-Direktori yang digunakan terdiri atas `init`, `fluent-bit`, `queries`, dan `scripts`. Pemisahan tersebut bertujuan agar file konfigurasi, bind mount, dan script praktikum tersusun secara terstruktur.
+Langkah pertama adalah membuat direktori kerja Bab 6 beserta subdirektori yang diperlukan. Struktur direktori digunakan untuk memisahkan file konfigurasi, initialization script, query analisis, dan script pengujian. Direktori yang digunakan terdiri atas `init`, `fluent-bit`, `queries`, dan `scripts`. Pemisahan tersebut bertujuan agar file konfigurasi, bind mount, dan script praktikum tersusun secara terstruktur.
 
 ![Gambar 1. Struktur direktori kerja Bab 6](./assets/halaman-04-gambar-01.png)
 
@@ -102,9 +76,7 @@ Direktori yang digunakan terdiri atas `init`, `fluent-bit`, `queries`, dan `scri
 
 ### 3.2 Pembuatan Template Konfigurasi (.env.example) dan Konfigurasi Aktif
 
-File `.env.example` dibuat untuk menyediakan template konfigurasi lingkungan praktikum. File ini berisi parameter yang diperlukan oleh Docker Compose, seperti nama database, akun administrator PostgreSQL, serta akun `fluentbit_user` yang digunakan untuk proses ingest log.
-
-Template tersebut kemudian disalin menjadi file `.env` sebagai konfigurasi aktif. File `.env` berisi nilai kredensial yang digunakan selama praktikum sehingga tidak boleh dimasukkan ke repository Git.
+File `.env.example` dibuat untuk menyediakan template konfigurasi lingkungan praktikum. File ini berisi parameter yang diperlukan oleh Docker Compose, seperti nama database, akun administrator PostgreSQL, serta akun `fluentbit_user` yang digunakan untuk proses ingest log. Template tersebut kemudian disalin menjadi file `.env` sebagai konfigurasi aktif. File `.env` berisi nilai kredensial yang digunakan selama praktikum sehingga tidak boleh dimasukkan ke repository Git.
 
 File `.env` memudahkan proses interpolasi variabel pada Docker Compose, tetapi bukan merupakan pengganti secret manager.
 
@@ -581,17 +553,11 @@ Selain memastikan pipeline berjalan, aspek keamanan dan operasional juga perlu d
 
 ### 1. Mengapa centralized logging diperlukan pada lingkungan container?
 
-Container memiliki karakteristik ephemeral, yaitu dapat dibuat, dihentikan, dan dihapus dalam waktu singkat. Apabila log hanya disimpan di dalam container, data log berisiko ikut hilang ketika container dihapus.
-
-Centralized logging diperlukan untuk mengumpulkan log dari berbagai container ke dalam satu tempat penyimpanan terpusat. Dengan demikian, log tetap dapat diakses meskipun container sumber sudah tidak berjalan.
-
-Selain itu, centralized logging memudahkan proses debugging, monitoring, analisis kesalahan, dan audit karena informasi aktivitas sistem dapat ditelusuri melalui satu sumber data.
+Container memiliki karakteristik ephemeral, yaitu dapat dibuat, dihentikan, dan dihapus dalam waktu singkat. Apabila log hanya disimpan di dalam container, data log berisiko ikut hilang ketika container dihapus. Centralized logging diperlukan untuk mengumpulkan log dari berbagai container ke dalam satu tempat penyimpanan terpusat. Dengan demikian, log tetap dapat diakses meskipun container sumber sudah tidak berjalan. Selain itu, centralized logging memudahkan proses debugging, monitoring, analisis kesalahan, dan audit karena informasi aktivitas sistem dapat ditelusuri melalui satu sumber data.
 
 ### 2. Apa peran Docker Fluentd Logging Driver dan Fluent Bit dalam proses pengiriman log?
 
-Docker Fluentd Logging Driver berfungsi meneruskan log yang dihasilkan container melalui stdout dan stderr menuju collector Fluent Bit.
-
-Sementara itu, Fluent Bit bertugas menerima log, melakukan pemrosesan record, buffering, dan meneruskan data ke sistem penyimpanan, yaitu PostgreSQL.
+Docker Fluentd Logging Driver berfungsi meneruskan log yang dihasilkan container melalui stdout dan stderr menuju collector Fluent Bit. Sementara itu, Fluent Bit bertugas menerima log, melakukan pemrosesan record, buffering, dan meneruskan data ke sistem penyimpanan, yaitu PostgreSQL.
 
 Pada praktikum ini, alur pengiriman log adalah:
 
@@ -601,36 +567,22 @@ Docker Engine menjalankan proses pengiriman melalui logging driver. Oleh karena 
 
 ### 3. Mengapa PostgreSQL menggunakan tipe data JSONB untuk menyimpan log?
 
-JSONB digunakan karena data log memiliki struktur yang terdiri atas beberapa field, seperti timestamp, severity, service, event, dan informasi container.
-
-Dengan menggunakan JSONB, PostgreSQL dapat menyimpan record log dalam format terstruktur dan mendukung pencarian berdasarkan field tertentu.
-
-Selain itu, PostgreSQL menyediakan indeks GIN yang dapat membantu mempercepat pencarian dan analisis data JSONB.
-
-Pada praktikum ini, record log disimpan pada tabel `logs.fluentbit` dengan tiga kolom utama, yaitu `tag`, `time`, dan `data`.
+JSONB digunakan karena data log memiliki struktur yang terdiri atas beberapa field, seperti timestamp, severity, service, event, dan informasi container. Dengan menggunakan JSONB, PostgreSQL dapat menyimpan record log dalam format terstruktur dan mendukung pencarian berdasarkan field tertentu. Selain itu, PostgreSQL menyediakan indeks GIN yang dapat membantu mempercepat pencarian dan analisis data JSONB. Pada praktikum ini, record log disimpan pada tabel `logs.fluentbit` dengan tiga kolom utama, yaitu `tag`, `time`, dan `data`.
 
 ### 4. Apa fungsi filesystem buffering pada Fluent Bit ketika PostgreSQL tidak tersedia?
 
-Filesystem buffering berfungsi menyimpan sementara data log pada media penyimpanan ketika tujuan pengiriman, yaitu PostgreSQL, sedang mengalami gangguan atau tidak dapat diakses.
-
-Dengan mekanisme ini, Fluent Bit tetap dapat menerima log dan menahan data sementara pada buffer sebelum mencoba mengirimkannya kembali ketika PostgreSQL sudah pulih.
-
-Pada praktikum ini, pengujian dilakukan dengan menghentikan PostgreSQL sementara, menjalankan log generator, kemudian menyalakan kembali PostgreSQL.
-
-Setelah backend kembali tersedia, Fluent Bit melakukan retry untuk mengirimkan data yang sebelumnya tertahan.
-
-Namun, filesystem buffering belum menjamin mekanisme exactly-once. Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau penghentian proses secara paksa tetap berisiko menyebabkan kehilangan event.
+Filesystem buffering berfungsi menyimpan sementara data log pada media penyimpanan ketika tujuan pengiriman, yaitu PostgreSQL, sedang mengalami gangguan atau tidak dapat diakses. Dengan mekanisme ini, Fluent Bit tetap dapat menerima log dan menahan data sementara pada buffer sebelum mencoba mengirimkannya kembali ketika PostgreSQL sudah pulih. Pada praktikum ini, pengujian dilakukan dengan menghentikan PostgreSQL sementara, menjalankan log generator, kemudian menyalakan kembali PostgreSQL. Setelah backend kembali tersedia, Fluent Bit melakukan retry untuk mengirimkan data yang sebelumnya tertahan. Namun, filesystem buffering belum menjamin mekanisme exactly-once. Proses retry dapat menyebabkan duplikasi data, sedangkan buffer yang penuh atau penghentian proses secara paksa tetap berisiko menyebabkan kehilangan event.
 
 ### 5. Bagaimana cara memastikan sistem centralized logging berjalan dengan baik dan aman?
 
 Sistem centralized logging perlu diperiksa melalui beberapa aspek, yaitu:
 
-1. Memastikan container PostgreSQL dan Fluent Bit berjalan dengan baik melalui perintah `docker compose ps`.
-2. Memeriksa endpoint health dan metrics Fluent Bit untuk mengetahui kondisi serta statistik pemrosesan log.
-3. Memastikan record log berhasil masuk ke tabel `logs.fluentbit` pada PostgreSQL.
-4. Menjalankan query untuk memeriksa jumlah event, distribusi severity, sumber container, dan waktu pencatatan.
-5. Melakukan pengujian buffering dan recovery ketika PostgreSQL tidak tersedia sementara.
-6. Membatasi akses jaringan PostgreSQL, mengelola kredensial dengan aman, serta menghindari pencatatan password, token, secret, dan informasi pribadi.
+1. **Ketersediaan layanan:** Memastikan container PostgreSQL dan Fluent Bit berjalan dengan baik melalui perintah `docker compose ps`.
+2. **Monitoring:** Memeriksa endpoint health dan metrics Fluent Bit untuk mengetahui kondisi serta statistik pemrosesan log.
+3. **Penyimpanan data:** Memastikan record log berhasil masuk ke tabel `logs.fluentbit` pada PostgreSQL.
+4. **Analisis log:** Menjalankan query untuk memeriksa jumlah event, distribusi severity, sumber container, dan waktu pencatatan.
+5. **Reliability:** Melakukan pengujian buffering dan recovery ketika PostgreSQL tidak tersedia sementara.
+6. **Keamanan:** Membatasi akses jaringan PostgreSQL, mengelola kredensial dengan aman, serta menghindari pencatatan password, token, secret, dan informasi pribadi.
 
 Dengan melakukan pemeriksaan tersebut, sistem dapat dipastikan mampu mengumpulkan, menyimpan, dan menyediakan data log untuk kebutuhan monitoring serta analisis ketika terjadi gangguan.
 
