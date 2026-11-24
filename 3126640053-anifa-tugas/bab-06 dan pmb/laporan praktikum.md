@@ -758,6 +758,3 @@ Berdasarkan praktikum Bab 6 mengenai centralized logging dengan Fluent Bit dan P
 
 7. Redaksi data sensitif dan minimisasi data diperlukan agar log tidak menyimpan password, token, cookie, session, maupun informasi pribadi pendaftar. Untuk lingkungan produksi, pengelolaan secret, kontrol akses, TLS, retensi, dan kapasitas penyimpanan tetap perlu diperhatikan.
 
-Dengan demikian, praktikum ini memberikan pemahaman mengenai pembangunan pipeline centralized logging dari log generator hingga penerapannya pada aplikasi multi-service. Sistem yang dibangun dapat digunakan untuk mengumpulkan, menyimpan, menelusuri, dan menganalisis event serta mendukung proses troubleshooting ketika terjadi gangguan.
-
----
